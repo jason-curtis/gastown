@@ -394,6 +394,8 @@ policy:
       prefer: gce-worker-1
 ```
 
+**When policy becomes a molecule**: Static policy handles simple preference-based routing. But when assignment requires cognition - analyzing work characteristics, checking outpost health in real-time, making cost/speed tradeoffs, or handling degraded outposts - escalate to `mol-outpost-assign`. The policy file declares preferences; the molecule executes intelligent assignment. See [Config vs Molecule](architecture.md#config-vs-molecule-when-to-use-which) for the general principle.
+
 ## Implementation Phases
 
 ### Phase 1: Outpost Abstraction (Local)

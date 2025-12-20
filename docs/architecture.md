@@ -4,6 +4,8 @@ Gas Town is a multi-agent workspace manager that coordinates AI coding agents wo
 
 **Key insight**: Work is a stream, not discrete batches. The Refinery's merge queue is the coordination mechanism. Beads (issues) are the data plane. There are no "swarm IDs" - just epics with children, processed by workers, merged through the queue.
 
+**Molecule-first paradigm**: Gas Town is fundamentally a molecule execution engine. Workers don't just "work on issues" - they execute molecules. The issue is seed data; the molecule defines the workflow. This enables nondeterministic idempotence: any worker can pick up where another left off, surviving crashes, context compaction, and restarts. If a process requires cognition, it should be a molecule. See [Molecules](#molecules-composable-workflow-templates) for full details.
+
 ## System Overview
 
 ```mermaid
@@ -426,6 +428,43 @@ Beads has two related concepts:
 Both use similar structures but different semantics:
 - Templates focus on parameterization (`{{variable}}` substitution)
 - Molecules focus on execution (step states, nondeterministic dispatch)
+
+### Config vs Molecule: When to Use Which
+
+**The Key Principle: If it requires cognition, it's a molecule.**
+
+| Use Case | Config | Molecule |
+|----------|--------|----------|
+| Static policy (max workers, timeouts) | ✅ | ❌ |
+| Agent workflow (design → implement → test) | ❌ | ✅ |
+| Outpost routing preferences | ✅ | ❌ |
+| Error recovery with decisions | ❌ | ✅ |
+| Environment variables | ✅ | ❌ |
+| Multi-step processes that can fail | ❌ | ✅ |
+
+**Config** (`config.json`, `outposts.yaml`):
+- Declarative settings
+- No decision-making required
+- Read once at startup
+- Changes require restart
+
+**Molecules**:
+- Procedural workflows
+- Require agent cognition at each step
+- Survive agent restarts
+- Track progress through step states
+
+**Example: Outpost Assignment**
+
+Static policy in `outposts.yaml`:
+```yaml
+policy:
+  default_preference: [local, gce-burst, cloudrun-burst]
+```
+
+But if assignment requires cognition (analyzing work characteristics, checking outpost health, making tradeoffs), escalate to a molecule like `mol-outpost-assign`.
+
+**The insight**: Gas Town doesn't spawn workers on issues. It spawns workers on molecules. The issue is just the seed data for the molecule execution.
 
 ### Operational Molecules
 
@@ -1591,7 +1630,7 @@ gt capture <polecat> "<cmd>"     # Run command in polecat session
 ### Session Management
 
 ```bash
-gt spawn --issue <id>  # Start polecat on issue (creates fresh worktree)
+gt spawn --issue <id> --molecule mol-engineer-in-box  # Spawn polecat with workflow
 gt handoff             # Polecat requests shutdown (run when done)
 gt session stop <p>    # Kill polecat session (Witness uses this)
 ```

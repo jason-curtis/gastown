@@ -565,14 +565,26 @@ Needs: inbox-check
 ## Step: plugin-run
 Execute registered plugins.
 
-Run any plugins registered with the Deacon:
-- Custom health checks
-- Integration hooks (Slack, GitHub, etc.)
-- Metrics collection
-- External system sync
+Scan ~/gt/plugins/ for plugin directories. Each plugin has a plugin.md with
+YAML frontmatter defining its gate (when to run) and instructions (what to do).
 
-Plugins are defined in the Mayor's config and run on each patrol cycle.
-Skip this step if no plugins are registered.
+See docs/deacon-plugins.md for full documentation.
+
+Gate types:
+- cooldown: Time since last run (e.g., 24h)
+- cron: Schedule-based (e.g., "0 9 * * *")
+- condition: Metric threshold (e.g., wisp count > 50)
+- event: Trigger-based (e.g., startup, heartbeat)
+
+For each plugin:
+1. Read plugin.md frontmatter to check gate
+2. Compare against state.json (last run, etc.)
+3. If gate is open, execute the plugin
+
+Plugins marked parallel: true can run concurrently using Task tool subagents.
+Sequential plugins run one at a time in directory order.
+
+Skip this step if ~/gt/plugins/ does not exist or is empty.
 Needs: health-scan
 
 ## Step: orphan-check

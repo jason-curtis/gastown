@@ -52,6 +52,11 @@ func runStatusLine(cmd *cobra.Command, args []string) error {
 		return runMayorStatusLine(t)
 	}
 
+	// Deacon status line
+	if role == "deacon" || statusLineSession == "gt-deacon" {
+		return runDeaconStatusLine(t)
+	}
+
 	// Witness status line (session naming: gt-witness-<rig>)
 	if role == "witness" || strings.HasPrefix(statusLineSession, "gt-witness-") {
 		return runWitnessStatusLine(t, rigName)
@@ -143,6 +148,41 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%s %d polecats", AgentTypeIcons[AgentMayor], polecatCount))
 	parts = append(parts, fmt.Sprintf("%d rigs", rigCount))
+	if unread > 0 {
+		parts = append(parts, fmt.Sprintf("\U0001F4EC %d", unread))
+	}
+
+	fmt.Print(strings.Join(parts, " | ") + " |")
+	return nil
+}
+
+// runDeaconStatusLine outputs status for the deacon session.
+// Shows: active rigs, patrol status, mail count
+func runDeaconStatusLine(t *tmux.Tmux) error {
+	// Count active rigs by checking for witnesses
+	sessions, err := t.ListSessions()
+	if err != nil {
+		return nil // Silent fail
+	}
+
+	rigs := make(map[string]bool)
+	for _, s := range sessions {
+		agent := categorizeSession(s)
+		if agent == nil {
+			continue
+		}
+		if agent.Rig != "" {
+			rigs[agent.Rig] = true
+		}
+	}
+	rigCount := len(rigs)
+
+	// Get deacon mail
+	unread := getUnreadMailCount("deacon/")
+
+	// Build status
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%s %d rigs", AgentTypeIcons[AgentDeacon], rigCount))
 	if unread > 0 {
 		parts = append(parts, fmt.Sprintf("\U0001F4EC %d", unread))
 	}

@@ -48,7 +48,7 @@ This creates a rig container with:
   - plugins/              Rig-level plugin directory
   - refinery/rig/         Canonical main clone
   - mayor/rig/            Mayor's working clone
-  - crew/main/            Default human workspace
+  - crew/max/             Default human workspace
   - witness/              Witness agent directory
   - polecats/             Worker directory (empty)
 
@@ -141,7 +141,7 @@ func init() {
 	rigCmd.AddCommand(rigShutdownCmd)
 
 	rigAddCmd.Flags().StringVar(&rigAddPrefix, "prefix", "", "Beads issue prefix (default: derived from name)")
-	rigAddCmd.Flags().StringVar(&rigAddCrew, "crew", "main", "Default crew workspace name")
+	rigAddCmd.Flags().StringVar(&rigAddCrew, "crew", "", "Crew workspace name (default: from town config or 'max')")
 
 	rigResetCmd.Flags().BoolVar(&rigResetHandoff, "handoff", false, "Clear handoff content")
 	rigResetCmd.Flags().BoolVar(&rigResetMail, "mail", false, "Clear stale mail messages")
@@ -161,6 +161,18 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	// Resolve crew name: --crew flag > town config > default constant
+	crewName := rigAddCrew
+	if crewName == "" {
+		// Try loading MayorConfig for default_crew_name
+		mayorConfigPath := filepath.Join(townRoot, "mayor", "config.json")
+		if mayorCfg, err := config.LoadMayorConfig(mayorConfigPath); err == nil && mayorCfg.DefaultCrewName != "" {
+			crewName = mayorCfg.DefaultCrewName
+		} else {
+			crewName = config.DefaultCrewName
+		}
 	}
 
 	// Load rigs config
@@ -188,7 +200,7 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 		Name:        name,
 		GitURL:      gitURL,
 		BeadsPrefix: rigAddPrefix,
-		CrewName:    rigAddCrew,
+		CrewName:    crewName,
 	})
 	if err != nil {
 		return fmt.Errorf("adding rig: %w", err)
@@ -210,12 +222,12 @@ func runRigAdd(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  ├── plugins/          (rig-level plugins)\n")
 	fmt.Printf("  ├── refinery/rig/     (canonical main)\n")
 	fmt.Printf("  ├── mayor/rig/        (mayor's clone)\n")
-	fmt.Printf("  ├── crew/%s/        (your workspace)\n", rigAddCrew)
+	fmt.Printf("  ├── crew/%s/        (your workspace)\n", crewName)
 	fmt.Printf("  ├── witness/\n")
 	fmt.Printf("  └── polecats/\n")
 
 	fmt.Printf("\nNext steps:\n")
-	fmt.Printf("  cd %s/crew/%s    # Work in your clone\n", filepath.Join(townRoot, name), rigAddCrew)
+	fmt.Printf("  cd %s/crew/%s    # Work in your clone\n", filepath.Join(townRoot, name), crewName)
 	fmt.Printf("  bd ready                 # See available work\n")
 
 	return nil

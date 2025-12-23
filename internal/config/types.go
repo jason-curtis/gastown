@@ -17,11 +17,12 @@ type TownConfig struct {
 // MayorConfig represents town-level behavioral configuration (mayor/config.json).
 // This is separate from TownConfig (identity) to keep configuration concerns distinct.
 type MayorConfig struct {
-	Type    string           `json:"type"`              // "mayor-config"
-	Version int              `json:"version"`           // schema version
-	Theme   *TownThemeConfig `json:"theme,omitempty"`   // global theme settings
-	Daemon  *DaemonConfig    `json:"daemon,omitempty"`  // daemon settings
-	Deacon  *DeaconConfig    `json:"deacon,omitempty"`  // deacon settings
+	Type            string           `json:"type"`                        // "mayor-config"
+	Version         int              `json:"version"`                     // schema version
+	Theme           *TownThemeConfig `json:"theme,omitempty"`             // global theme settings
+	Daemon          *DaemonConfig    `json:"daemon,omitempty"`            // daemon settings
+	Deacon          *DeaconConfig    `json:"deacon,omitempty"`            // deacon settings
+	DefaultCrewName string           `json:"default_crew_name,omitempty"` // default crew name for new rigs
 }
 
 // DaemonConfig represents daemon process settings.
@@ -37,6 +38,9 @@ type DeaconConfig struct {
 
 // CurrentMayorConfigVersion is the current schema version for MayorConfig.
 const CurrentMayorConfigVersion = 1
+
+// DefaultCrewName is the default name for crew workspaces when not overridden.
+const DefaultCrewName = "max"
 
 // RigsConfig represents the rigs registry (mayor/rigs.json).
 type RigsConfig struct {

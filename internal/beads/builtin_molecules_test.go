@@ -5,8 +5,8 @@ import "testing"
 func TestBuiltinMolecules(t *testing.T) {
 	molecules := BuiltinMolecules()
 
-	if len(molecules) != 9 {
-		t.Errorf("expected 9 built-in molecules, got %d", len(molecules))
+	if len(molecules) != 12 {
+		t.Errorf("expected 12 built-in molecules, got %d", len(molecules))
 	}
 
 	// Verify each molecule can be parsed and validated
@@ -190,14 +190,14 @@ func TestPolecatWorkMolecule(t *testing.T) {
 	}
 
 	// Should have 8 steps: load-context, implement, self-review, verify-tests,
-	// rebase-main, submit-merge, update-handoff, request-shutdown
+	// rebase-main, submit-merge, exit-decision, request-shutdown
 	if len(steps) != 8 {
 		t.Errorf("expected 8 steps, got %d", len(steps))
 	}
 
 	expectedRefs := []string{
 		"load-context", "implement", "self-review", "verify-tests",
-		"rebase-main", "submit-merge", "update-handoff", "request-shutdown",
+		"rebase-main", "submit-merge", "exit-decision", "request-shutdown",
 	}
 	for i, expected := range expectedRefs {
 		if i >= len(steps) {
@@ -225,9 +225,9 @@ func TestPolecatWorkMolecule(t *testing.T) {
 		t.Errorf("rebase-main should need 2 deps, got %v", steps[4].Needs)
 	}
 
-	// request-shutdown needs update-handoff
-	if len(steps[7].Needs) != 1 || steps[7].Needs[0] != "update-handoff" {
-		t.Errorf("request-shutdown should need update-handoff, got %v", steps[7].Needs)
+	// request-shutdown needs exit-decision
+	if len(steps[7].Needs) != 1 || steps[7].Needs[0] != "exit-decision" {
+		t.Errorf("request-shutdown should need exit-decision, got %v", steps[7].Needs)
 	}
 }
 
@@ -247,15 +247,15 @@ func TestDeaconPatrolMolecule(t *testing.T) {
 		t.Fatalf("failed to parse: %v", err)
 	}
 
-	// Should have 7 steps: inbox-check, health-scan, plugin-run, orphan-check,
-	// session-gc, context-check, loop-or-exit
-	if len(steps) != 7 {
-		t.Errorf("expected 7 steps, got %d", len(steps))
+	// Should have 8 steps: inbox-check, trigger-pending-spawns, health-scan, plugin-run,
+	// orphan-check, session-gc, context-check, loop-or-exit
+	if len(steps) != 8 {
+		t.Errorf("expected 8 steps, got %d", len(steps))
 	}
 
 	expectedRefs := []string{
-		"inbox-check", "health-scan", "plugin-run", "orphan-check",
-		"session-gc", "context-check", "loop-or-exit",
+		"inbox-check", "trigger-pending-spawns", "health-scan", "plugin-run",
+		"orphan-check", "session-gc", "context-check", "loop-or-exit",
 	}
 	for i, expected := range expectedRefs {
 		if i >= len(steps) {
@@ -273,13 +273,67 @@ func TestDeaconPatrolMolecule(t *testing.T) {
 		t.Errorf("inbox-check should have no deps, got %v", steps[0].Needs)
 	}
 
-	// health-scan needs inbox-check
+	// trigger-pending-spawns needs inbox-check
 	if len(steps[1].Needs) != 1 || steps[1].Needs[0] != "inbox-check" {
-		t.Errorf("health-scan should need inbox-check, got %v", steps[1].Needs)
+		t.Errorf("trigger-pending-spawns should need inbox-check, got %v", steps[1].Needs)
 	}
 
 	// loop-or-exit needs context-check
-	if len(steps[6].Needs) != 1 || steps[6].Needs[0] != "context-check" {
-		t.Errorf("loop-or-exit should need context-check, got %v", steps[6].Needs)
+	if len(steps[7].Needs) != 1 || steps[7].Needs[0] != "context-check" {
+		t.Errorf("loop-or-exit should need context-check, got %v", steps[7].Needs)
+	}
+}
+
+func TestWitnessPatrolMolecule(t *testing.T) {
+	mol := WitnessPatrolMolecule()
+
+	if mol.ID != "mol-witness-patrol" {
+		t.Errorf("expected ID 'mol-witness-patrol', got %q", mol.ID)
+	}
+
+	if mol.Title != "Witness Patrol" {
+		t.Errorf("expected Title 'Witness Patrol', got %q", mol.Title)
+	}
+
+	steps, err := ParseMoleculeSteps(mol.Description)
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	// Should have 10 steps: inbox-check, load-state, survey-workers, inspect-workers,
+	// decide-actions, execute-actions, save-state, generate-summary, context-check, burn-or-loop
+	if len(steps) != 10 {
+		t.Errorf("expected 10 steps, got %d", len(steps))
+	}
+
+	expectedRefs := []string{
+		"inbox-check", "load-state", "survey-workers", "inspect-workers",
+		"decide-actions", "execute-actions", "save-state", "generate-summary",
+		"context-check", "burn-or-loop",
+	}
+	for i, expected := range expectedRefs {
+		if i >= len(steps) {
+			t.Errorf("missing step %d: expected %q", i, expected)
+			continue
+		}
+		if steps[i].Ref != expected {
+			t.Errorf("step %d: expected ref %q, got %q", i, expected, steps[i].Ref)
+		}
+	}
+
+	// Verify key dependencies
+	// inbox-check has no deps (first step)
+	if len(steps[0].Needs) != 0 {
+		t.Errorf("inbox-check should have no deps, got %v", steps[0].Needs)
+	}
+
+	// load-state needs inbox-check
+	if len(steps[1].Needs) != 1 || steps[1].Needs[0] != "inbox-check" {
+		t.Errorf("load-state should need inbox-check, got %v", steps[1].Needs)
+	}
+
+	// burn-or-loop needs context-check
+	if len(steps[9].Needs) != 1 || steps[9].Needs[0] != "context-check" {
+		t.Errorf("burn-or-loop should need context-check, got %v", steps[9].Needs)
 	}
 }

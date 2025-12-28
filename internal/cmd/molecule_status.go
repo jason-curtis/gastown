@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -247,6 +248,11 @@ func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("listing pinned beads: %w", err)
+	}
+
+	// For town-level roles (mayor, deacon), scan all rigs if nothing found locally
+	if len(pinnedBeads) == 0 && isTownLevelRole(target) {
+		pinnedBeads = scanAllRigsForPinnedBeads(townRoot, target)
 	}
 
 	// Build status info
@@ -710,4 +716,47 @@ func getGitRootForMolStatus() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// isTownLevelRole returns true if the agent ID is a town-level role.
+// Town-level roles (Mayor, Deacon) operate from the town root and may have
+// pinned beads in any rig's beads directory.
+func isTownLevelRole(agentID string) bool {
+	return agentID == "mayor" || agentID == "deacon"
+}
+
+// scanAllRigsForPinnedBeads scans all registered rigs for pinned beads
+// assigned to the target agent. Used for town-level roles that may have
+// work pinned in any rig.
+func scanAllRigsForPinnedBeads(townRoot, target string) []*beads.Issue {
+	// Load routes from town beads
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := beads.LoadRoutes(townBeadsDir)
+	if err != nil {
+		return nil
+	}
+
+	// Scan each rig's beads directory
+	for _, route := range routes {
+		rigBeadsDir := filepath.Join(townRoot, route.Path)
+		if _, err := os.Stat(rigBeadsDir); os.IsNotExist(err) {
+			continue
+		}
+
+		b := beads.New(rigBeadsDir)
+		pinnedBeads, err := b.List(beads.ListOptions{
+			Status:   beads.StatusPinned,
+			Assignee: target,
+			Priority: -1,
+		})
+		if err != nil {
+			continue
+		}
+
+		if len(pinnedBeads) > 0 {
+			return pinnedBeads
+		}
+	}
+
+	return nil
 }

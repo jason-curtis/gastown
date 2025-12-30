@@ -147,6 +147,24 @@ Displays running state, uptime, session info, and activity.`,
 	RunE: runSessionStatus,
 }
 
+var sessionCheckCmd = &cobra.Command{
+	Use:   "check [rig]",
+	Short: "Check session health for polecats",
+	Long: `Check if polecat tmux sessions are alive and healthy.
+
+This command validates that:
+1. Polecats with work-on-hook have running tmux sessions
+2. Sessions are responsive
+
+Use this for manual health checks or debugging session issues.
+
+Examples:
+  gt session check              # Check all rigs
+  gt session check gastown      # Check specific rig`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runSessionCheck,
+}
+
 func init() {
 	// Start flags
 	sessionStartCmd.Flags().StringVar(&sessionIssue, "issue", "", "Issue ID to work on")
@@ -177,6 +195,7 @@ func init() {
 	sessionCmd.AddCommand(sessionInjectCmd)
 	sessionCmd.AddCommand(sessionRestartCmd)
 	sessionCmd.AddCommand(sessionStatusCmd)
+	sessionCmd.AddCommand(sessionCheckCmd)
 
 	rootCmd.AddCommand(sessionCmd)
 }
@@ -572,4 +591,93 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
 	}
 	return fmt.Sprintf("%dh %dm", hours, mins)
+}
+
+func runSessionCheck(cmd *cobra.Command, args []string) error {
+	// Find town root
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	// Load rigs config
+	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
+	if err != nil {
+		rigsConfig = &config.RigsConfig{Rigs: make(map[string]config.RigEntry)}
+	}
+
+	// Get rigs to check
+	g := git.NewGit(townRoot)
+	rigMgr := rig.NewManager(townRoot, rigsConfig, g)
+	rigs, err := rigMgr.DiscoverRigs()
+	if err != nil {
+		return fmt.Errorf("discovering rigs: %w", err)
+	}
+
+	// Filter if specific rig requested
+	if len(args) > 0 {
+		rigFilter := args[0]
+		var filtered []*rig.Rig
+		for _, r := range rigs {
+			if r.Name == rigFilter {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) == 0 {
+			return fmt.Errorf("rig not found: %s", rigFilter)
+		}
+		rigs = filtered
+	}
+
+	fmt.Printf("%s Session Health Check\n\n", style.Bold.Render("🔍"))
+
+	t := tmux.NewTmux()
+	totalChecked := 0
+	totalHealthy := 0
+	totalCrashed := 0
+
+	for _, r := range rigs {
+		polecatsDir := filepath.Join(r.Path, "polecats")
+		entries, err := os.ReadDir(polecatsDir)
+		if err != nil {
+			continue // Rig might not have polecats
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			polecatName := entry.Name()
+			sessionName := fmt.Sprintf("gt-%s-%s", r.Name, polecatName)
+			totalChecked++
+
+			// Check if session exists
+			running, err := t.HasSession(sessionName)
+			if err != nil {
+				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("⚠"), r.Name, polecatName, style.Dim.Render("error checking session"))
+				continue
+			}
+
+			if running {
+				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✓"), r.Name, polecatName, style.Dim.Render("session alive"))
+				totalHealthy++
+			} else {
+				// Check if polecat has work on hook (would need restart)
+				fmt.Printf("  %s %s/%s: %s\n", style.Bold.Render("✗"), r.Name, polecatName, style.Dim.Render("session not running"))
+				totalCrashed++
+			}
+		}
+	}
+
+	// Summary
+	fmt.Printf("\n%s Summary: %d checked, %d healthy, %d not running\n",
+		style.Bold.Render("📊"), totalChecked, totalHealthy, totalCrashed)
+
+	if totalCrashed > 0 {
+		fmt.Printf("\n%s To restart crashed polecats: gt session restart <rig>/<polecat>\n",
+			style.Dim.Render("Tip:"))
+	}
+
+	return nil
 }

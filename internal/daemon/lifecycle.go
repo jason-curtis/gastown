@@ -235,6 +235,21 @@ func (d *Daemon) identityToSession(identity string) string {
 		if strings.Contains(identity, "-crew-") {
 			return "gt-" + identity
 		}
+		// Pattern: <rig>-polecat-<name> or <rig>/polecats/<name> → gt-<rig>-<name>
+		if strings.Contains(identity, "-polecat-") {
+			// <rig>-polecat-<name> → gt-<rig>-<name>
+			parts := strings.SplitN(identity, "-polecat-", 2)
+			if len(parts) == 2 {
+				return fmt.Sprintf("gt-%s-%s", parts[0], parts[1])
+			}
+		}
+		if strings.Contains(identity, "/polecats/") {
+			// <rig>/polecats/<name> → gt-<rig>-<name>
+			parts := strings.Split(identity, "/polecats/")
+			if len(parts) == 2 {
+				return fmt.Sprintf("gt-%s-%s", parts[0], parts[1])
+			}
+		}
 		// Unknown identity
 		return ""
 	}
@@ -276,6 +291,31 @@ func (d *Daemon) restartSession(sessionName, identity string) error {
 		workDir = filepath.Join(d.config.TownRoot, rigName, "crew", crewName)
 		startCmd = "exec claude --dangerously-skip-permissions"
 		agentRole = "crew"
+		needsPreSync = true
+	} else if strings.Contains(identity, "-polecat-") || strings.Contains(identity, "/polecats/") {
+		// Extract rig and polecat name from either format:
+		// <rig>-polecat-<name> or <rig>/polecats/<name>
+		var polecatName string
+		if strings.Contains(identity, "-polecat-") {
+			parts := strings.SplitN(identity, "-polecat-", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid polecat identity format: %s", identity)
+			}
+			rigName = parts[0]
+			polecatName = parts[1]
+		} else {
+			parts := strings.Split(identity, "/polecats/")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid polecat identity format: %s", identity)
+			}
+			rigName = parts[0]
+			polecatName = parts[1]
+		}
+		workDir = filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName)
+		bdActor := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
+		startCmd = fmt.Sprintf("export GT_ROLE=polecat GT_RIG=%s GT_POLECAT=%s BD_ACTOR=%s && claude --dangerously-skip-permissions",
+			rigName, polecatName, bdActor)
+		agentRole = "polecat"
 		needsPreSync = true
 	} else {
 		return fmt.Errorf("don't know how to restart %s", identity)
@@ -464,6 +504,24 @@ func (d *Daemon) identityToStateFile(identity string) string {
 				return filepath.Join(d.config.TownRoot, rigName, "crew", crewName, "state.json")
 			}
 		}
+		// Pattern: <rig>-polecat-<name> → <townRoot>/<rig>/polecats/<name>/state.json
+		if strings.Contains(identity, "-polecat-") {
+			parts := strings.SplitN(identity, "-polecat-", 2)
+			if len(parts) == 2 {
+				rigName := parts[0]
+				polecatName := parts[1]
+				return filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName, "state.json")
+			}
+		}
+		// Pattern: <rig>/polecats/<name> → <townRoot>/<rig>/polecats/<name>/state.json
+		if strings.Contains(identity, "/polecats/") {
+			parts := strings.Split(identity, "/polecats/")
+			if len(parts) == 2 {
+				rigName := parts[0]
+				polecatName := parts[1]
+				return filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName, "state.json")
+			}
+		}
 		// Unknown identity - can't determine state file
 		return ""
 	}
@@ -550,6 +608,7 @@ func (d *Daemon) getAgentBeadInfo(agentBeadID string) (*AgentBeadInfo, error) {
 //   - "mayor" → "gt-mayor"
 //   - "gastown-witness" → "gt-gastown-witness"
 //   - "gastown-refinery" → "gt-gastown-refinery"
+//   - "gastown-polecat-toast" → "gt-polecat-gastown-toast"
 func (d *Daemon) identityToAgentBeadID(identity string) string {
 	switch identity {
 	case "deacon":
@@ -572,6 +631,20 @@ func (d *Daemon) identityToAgentBeadID(identity string) string {
 			parts := strings.SplitN(identity, "-crew-", 2)
 			if len(parts) == 2 {
 				return beads.CrewBeadID(parts[0], parts[1])
+			}
+		}
+		// Pattern: <rig>-polecat-<name> → gt-polecat-<rig>-<name>
+		if strings.Contains(identity, "-polecat-") {
+			parts := strings.SplitN(identity, "-polecat-", 2)
+			if len(parts) == 2 {
+				return beads.PolecatBeadID(parts[0], parts[1])
+			}
+		}
+		// Pattern: <rig>/polecats/<name> → gt-polecat-<rig>-<name>
+		if strings.Contains(identity, "/polecats/") {
+			parts := strings.Split(identity, "/polecats/")
+			if len(parts) == 2 {
+				return beads.PolecatBeadID(parts[0], parts[1])
 			}
 		}
 		// Unknown format
@@ -673,6 +746,7 @@ func (d *Daemon) markAgentDead(agentBeadID string) error {
 //   - "gastown-witness" → "gastown/witness"
 //   - "gastown-refinery" → "gastown/refinery"
 //   - "gastown-crew-max" → "gastown/crew/max"
+//   - "gastown-polecat-toast" → "gastown/polecats/toast"
 func identityToBDActor(identity string) string {
 	switch identity {
 	case "mayor", "deacon":
@@ -694,6 +768,17 @@ func identityToBDActor(identity string) string {
 			if len(parts) == 2 {
 				return parts[0] + "/crew/" + parts[1]
 			}
+		}
+		// Pattern: <rig>-polecat-<name> → <rig>/polecats/<name>
+		if strings.Contains(identity, "-polecat-") {
+			parts := strings.SplitN(identity, "-polecat-", 2)
+			if len(parts) == 2 {
+				return parts[0] + "/polecats/" + parts[1]
+			}
+		}
+		// Identity already in slash format - return as-is
+		if strings.Contains(identity, "/polecats/") {
+			return identity
 		}
 		// Unknown format - return as-is
 		return identity

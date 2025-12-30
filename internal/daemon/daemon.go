@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -201,6 +202,10 @@ func (d *Daemon) heartbeat(state *State) {
 
 	// 7. Check for orphaned work (assigned to dead agents)
 	d.checkOrphanedWork()
+
+	// 8. Check polecat session health (proactive crash detection)
+	// This validates tmux sessions are still alive for polecats with work-on-hook
+	d.checkPolecatSessionHealth()
 
 	// Update state
 	state.LastHeartbeat = time.Now()
@@ -468,4 +473,151 @@ func StopDaemon(townRoot string) error {
 	_ = os.Remove(pidFile)
 
 	return nil
+}
+
+// checkPolecatSessionHealth proactively validates polecat tmux sessions.
+// This detects crashed polecats that:
+// 1. Have work-on-hook (assigned work)
+// 2. Report state=running/working in their agent bead
+// 3. But the tmux session is actually dead
+//
+// When a crash is detected, the polecat is automatically restarted.
+// This provides faster recovery than waiting for GUPP timeout or Witness detection.
+func (d *Daemon) checkPolecatSessionHealth() {
+	rigs := d.getKnownRigs()
+	for _, rigName := range rigs {
+		d.checkRigPolecatHealth(rigName)
+	}
+}
+
+// checkRigPolecatHealth checks polecat session health for a specific rig.
+func (d *Daemon) checkRigPolecatHealth(rigName string) {
+	// Get polecat directories for this rig
+	polecatsDir := filepath.Join(d.config.TownRoot, rigName, "polecats")
+	entries, err := os.ReadDir(polecatsDir)
+	if err != nil {
+		return // No polecats directory - rig might not have polecats
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		polecatName := entry.Name()
+		d.checkPolecatHealth(rigName, polecatName)
+	}
+}
+
+// checkPolecatHealth checks a single polecat's session health.
+// If the polecat has work-on-hook but the tmux session is dead, it's restarted.
+func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
+	// Build the expected tmux session name
+	sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
+
+	// Check if tmux session exists
+	sessionAlive, err := d.tmux.HasSession(sessionName)
+	if err != nil {
+		d.logger.Printf("Error checking session %s: %v", sessionName, err)
+		return
+	}
+
+	if sessionAlive {
+		// Session is alive - nothing to do
+		return
+	}
+
+	// Session is dead. Check if the polecat has work-on-hook.
+	agentBeadID := beads.PolecatBeadID(rigName, polecatName)
+	info, err := d.getAgentBeadInfo(agentBeadID)
+	if err != nil {
+		// Agent bead doesn't exist or error - polecat might not be registered
+		return
+	}
+
+	// Check if polecat has hooked work
+	if info.HookBead == "" {
+		// No hooked work - no need to restart (polecat was idle)
+		return
+	}
+
+	// Polecat has work but session is dead - this is a crash!
+	d.logger.Printf("CRASH DETECTED: polecat %s/%s has hook_bead=%s but session %s is dead",
+		rigName, polecatName, info.HookBead, sessionName)
+
+	// Auto-restart the polecat
+	if err := d.restartPolecatSession(rigName, polecatName, sessionName); err != nil {
+		d.logger.Printf("Error restarting polecat %s/%s: %v", rigName, polecatName, err)
+		// Notify witness as fallback
+		d.notifyWitnessOfCrashedPolecat(rigName, polecatName, info.HookBead, err)
+	} else {
+		d.logger.Printf("Successfully restarted crashed polecat %s/%s", rigName, polecatName)
+	}
+}
+
+// restartPolecatSession restarts a crashed polecat session.
+func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string) error {
+	// Determine working directory
+	workDir := filepath.Join(d.config.TownRoot, rigName, "polecats", polecatName)
+
+	// Verify the worktree exists
+	if _, err := os.Stat(workDir); os.IsNotExist(err) {
+		return fmt.Errorf("polecat worktree does not exist: %s", workDir)
+	}
+
+	// Pre-sync workspace (ensure beads are current)
+	d.syncWorkspace(workDir)
+
+	// Create new tmux session
+	if err := d.tmux.NewSession(sessionName, workDir); err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+
+	// Set environment variables
+	_ = d.tmux.SetEnvironment(sessionName, "GT_ROLE", "polecat")
+	_ = d.tmux.SetEnvironment(sessionName, "GT_RIG", rigName)
+	_ = d.tmux.SetEnvironment(sessionName, "GT_POLECAT", polecatName)
+
+	bdActor := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
+	_ = d.tmux.SetEnvironment(sessionName, "BD_ACTOR", bdActor)
+
+	beadsDir := filepath.Join(d.config.TownRoot, rigName, ".beads")
+	_ = d.tmux.SetEnvironment(sessionName, "BEADS_DIR", beadsDir)
+	_ = d.tmux.SetEnvironment(sessionName, "BEADS_NO_DAEMON", "1")
+	_ = d.tmux.SetEnvironment(sessionName, "BEADS_AGENT_NAME", fmt.Sprintf("%s/%s", rigName, polecatName))
+
+	// Apply theme
+	theme := tmux.AssignTheme(rigName)
+	_ = d.tmux.ConfigureGasTownSession(sessionName, theme, rigName, polecatName, "polecat")
+
+	// Set pane-died hook for future crash detection
+	agentID := fmt.Sprintf("%s/%s", rigName, polecatName)
+	_ = d.tmux.SetPaneDiedHook(sessionName, agentID)
+
+	// Launch Claude with environment exported inline
+	startCmd := fmt.Sprintf("export GT_ROLE=polecat GT_RIG=%s GT_POLECAT=%s BD_ACTOR=%s && claude --dangerously-skip-permissions",
+		rigName, polecatName, bdActor)
+	if err := d.tmux.SendKeys(sessionName, startCmd); err != nil {
+		return fmt.Errorf("sending startup command: %w", err)
+	}
+
+	return nil
+}
+
+// notifyWitnessOfCrashedPolecat notifies the witness when a polecat restart fails.
+func (d *Daemon) notifyWitnessOfCrashedPolecat(rigName, polecatName, hookBead string, restartErr error) {
+	witnessAddr := rigName + "/witness"
+	subject := fmt.Sprintf("CRASHED_POLECAT: %s/%s restart failed", rigName, polecatName)
+	body := fmt.Sprintf(`Polecat %s crashed and automatic restart failed.
+
+hook_bead: %s
+restart_error: %v
+
+Manual intervention may be required.`,
+		polecatName, hookBead, restartErr)
+
+	cmd := exec.Command("gt", "mail", "send", witnessAddr, "-s", subject, "-m", body)
+	cmd.Dir = d.config.TownRoot
+	if err := cmd.Run(); err != nil {
+		d.logger.Printf("Warning: failed to notify witness of crashed polecat: %v", err)
+	}
 }

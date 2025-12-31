@@ -9,10 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/tui/convoy"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -25,19 +28,25 @@ func generateShortID() string {
 
 // Convoy command flags
 var (
-	convoyMolecule   string
-	convoyNotify     string
-	convoyStatusJSON bool
-	convoyListJSON   bool
-	convoyListStatus string
-	convoyListAll    bool
+	convoyMolecule    string
+	convoyNotify      string
+	convoyStatusJSON  bool
+	convoyListJSON    bool
+	convoyListStatus  string
+	convoyListAll     bool
+	convoyInteractive bool
 )
 
 var convoyCmd = &cobra.Command{
 	Use:     "convoy",
 	GroupID: GroupWork,
 	Short:   "Track batches of work across rigs",
-	RunE:    requireSubcommand,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if convoyInteractive {
+			return runConvoyTUI()
+		}
+		return requireSubcommand(cmd, args)
+	},
 	Long: `Manage convoys - the primary unit for tracking batched work.
 
 A convoy is a persistent tracking unit that monitors related issues across
@@ -133,6 +142,9 @@ func init() {
 	convoyListCmd.Flags().BoolVar(&convoyListJSON, "json", false, "Output as JSON")
 	convoyListCmd.Flags().StringVar(&convoyListStatus, "status", "", "Filter by status (open, closed)")
 	convoyListCmd.Flags().BoolVar(&convoyListAll, "all", false, "Show all convoys (open and closed)")
+
+	// Interactive TUI flag (on parent command)
+	convoyCmd.Flags().BoolVarP(&convoyInteractive, "interactive", "i", false, "Interactive tree view")
 
 	// Add subcommands
 	convoyCmd.AddCommand(convoyCreateCmd)
@@ -329,6 +341,15 @@ func runConvoyStatus(cmd *cobra.Command, args []string) error {
 
 	convoyID := args[0]
 
+	// Check if it's a numeric shortcut (e.g., "1" instead of "hq-cv-xyz")
+	if n, err := strconv.Atoi(convoyID); err == nil && n > 0 {
+		resolved, err := resolveConvoyNumber(townBeads, n)
+		if err != nil {
+			return err
+		}
+		convoyID = resolved
+	}
+
 	// Get convoy details
 	showArgs := []string{"show", convoyID, "--json"}
 	showCmd := exec.Command("bd", showArgs...)
@@ -518,11 +539,11 @@ func runConvoyList(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("%s\n\n", style.Bold.Render("Convoys"))
-	for _, c := range convoys {
+	for i, c := range convoys {
 		status := formatConvoyStatus(c.Status)
-		fmt.Printf("  🚚 %s: %s %s\n", c.ID, c.Title, status)
+		fmt.Printf("  %d. 🚚 %s: %s %s\n", i+1, c.ID, c.Title, status)
 	}
-	fmt.Printf("\nUse 'gt convoy status <id>' for detailed view.\n")
+	fmt.Printf("\nUse 'gt convoy status <id>' or 'gt convoy status <n>' for detailed view.\n")
 
 	return nil
 }
@@ -702,4 +723,45 @@ func getIssueDetails(issueID string) *issueDetails {
 		Status:    issues[0].Status,
 		IssueType: issues[0].IssueType,
 	}
+}
+
+// runConvoyTUI launches the interactive convoy TUI.
+func runConvoyTUI() error {
+	townBeads, err := getTownBeadsDir()
+	if err != nil {
+		return err
+	}
+
+	m := convoy.New(townBeads)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err = p.Run()
+	return err
+}
+
+// resolveConvoyNumber converts a numeric shortcut (1, 2, 3...) to a convoy ID.
+// Numbers correspond to the order shown in 'gt convoy list'.
+func resolveConvoyNumber(townBeads string, n int) (string, error) {
+	// Get convoy list (same query as runConvoyList)
+	listArgs := []string{"list", "--type=convoy", "--json"}
+	listCmd := exec.Command("bd", listArgs...)
+	listCmd.Dir = townBeads
+	var stdout bytes.Buffer
+	listCmd.Stdout = &stdout
+
+	if err := listCmd.Run(); err != nil {
+		return "", fmt.Errorf("listing convoys: %w", err)
+	}
+
+	var convoys []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+		return "", fmt.Errorf("parsing convoy list: %w", err)
+	}
+
+	if n < 1 || n > len(convoys) {
+		return "", fmt.Errorf("convoy %d not found (have %d convoys)", n, len(convoys))
+	}
+
+	return convoys[n-1].ID, nil
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -178,9 +179,7 @@ func (m *Manager) Start(polecat string, opts StartOptions) error {
 	if command == "" {
 		// Polecats run with full permissions - Gas Town is for grownups
 		// Export env vars inline so Claude's role detection works
-		bdActor := fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat)
-		command = fmt.Sprintf("export GT_ROLE=polecat GT_RIG=%s GT_POLECAT=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --dangerously-skip-permissions",
-			m.rig.Name, polecat, bdActor, bdActor)
+		command = config.BuildPolecatStartupCommand(m.rig.Name, polecat, m.rig.Path, "")
 	}
 	if err := m.tmux.SendKeys(sessionID, command); err != nil {
 		return fmt.Errorf("sending command: %w", err)

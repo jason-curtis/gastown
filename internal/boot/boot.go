@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
@@ -191,7 +192,7 @@ func (b *Boot) spawnTmux() error {
 
 	// Launch Claude with environment exported inline and initial triage prompt
 	// The "gt boot triage" prompt tells Boot to immediately start triage (GUPP principle)
-	startCmd := `export GT_ROLE=boot BD_ACTOR=deacon-boot && claude --dangerously-skip-permissions "gt boot triage"`
+	startCmd := config.BuildAgentStartupCommand("boot", "deacon-boot", "", "gt boot triage")
 	if err := b.tmux.SendKeys(SessionName, startCmd); err != nil {
 		return fmt.Errorf("sending startup command: %w", err)
 	}

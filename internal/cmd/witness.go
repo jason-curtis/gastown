@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -333,7 +334,7 @@ func ensureWitnessSession(rigName string, r *rig.Rig) (bool, error) {
 	// Restarts are handled by daemon via LIFECYCLE mail or deacon health-scan
 	// NOTE: No gt prime injection needed - SessionStart hook handles it automatically
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	if err := t.SendKeys(sessionName, fmt.Sprintf("export GT_ROLE=witness BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --dangerously-skip-permissions", bdActor, bdActor)); err != nil {
+	if err := t.SendKeys(sessionName, config.BuildAgentStartupCommand("witness", bdActor, "", "")); err != nil {
 		return false, fmt.Errorf("sending command: %w", err)
 	}
 

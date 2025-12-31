@@ -341,7 +341,8 @@ func ensureRefinerySession(rigName string, r *rig.Rig) (bool, error) {
 
 	// Launch Claude in a respawn loop
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	loopCmd := `export GT_ROLE=refinery BD_ACTOR=` + bdActor + ` GIT_AUTHOR_NAME=` + bdActor + ` && while true; do echo "🛢️ Starting Refinery for ` + rigName + `..."; claude --dangerously-skip-permissions; echo ""; echo "Refinery exited. Restarting in 2s... (Ctrl-C to stop)"; sleep 2; done`
+	runtimeCmd := config.GetRuntimeCommand(r.Path)
+	loopCmd := `export GT_ROLE=refinery BD_ACTOR=` + bdActor + ` GIT_AUTHOR_NAME=` + bdActor + ` && while true; do echo "🛢️ Starting Refinery for ` + rigName + `..."; ` + runtimeCmd + `; echo ""; echo "Refinery exited. Restarting in 2s... (Ctrl-C to stop)"; sleep 2; done`
 	if err := t.SendKeysDelayed(sessionName, loopCmd, 200); err != nil {
 		return false, fmt.Errorf("sending command: %w", err)
 	}
@@ -744,7 +745,7 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 		if !t.IsClaudeRunning(sessionID) {
 			// Claude has exited, restart it
 			fmt.Printf("Session exists, restarting Claude...\n")
-			if err := t.SendKeys(sessionID, "claude --dangerously-skip-permissions"); err != nil {
+			if err := t.SendKeys(sessionID, config.GetRuntimeCommand(r.Path)); err != nil {
 				return fmt.Errorf("restarting claude: %w", err)
 			}
 			// Wait for Claude to start, then prime
@@ -785,7 +786,7 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 		}
 
 		// Start claude with skip permissions
-		if err := t.SendKeys(sessionID, "claude --dangerously-skip-permissions"); err != nil {
+		if err := t.SendKeys(sessionID, config.GetRuntimeCommand(r.Path)); err != nil {
 			return fmt.Errorf("starting claude: %w", err)
 		}
 
@@ -926,7 +927,7 @@ func startCrewMember(rigName, crewName, townRoot string) error {
 	}
 
 	// Start claude
-	if err := t.SendKeys(sessionID, "claude --dangerously-skip-permissions"); err != nil {
+	if err := t.SendKeys(sessionID, config.GetRuntimeCommand(r.Path)); err != nil {
 		return fmt.Errorf("starting claude: %w", err)
 	}
 

@@ -416,21 +416,19 @@ func (d *Daemon) getNeedsPreSync(config *beads.RoleConfig, parsed *ParsedIdentit
 
 // getStartCommand determines the startup command for an agent.
 // Uses role bead config if available, falls back to hardcoded defaults.
-func (d *Daemon) getStartCommand(config *beads.RoleConfig, parsed *ParsedIdentity) string {
+func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIdentity) string {
 	// If role bead has explicit config, use it
-	if config != nil && config.StartCommand != "" {
+	if roleConfig != nil && roleConfig.StartCommand != "" {
 		// Expand any patterns in the command
-		return beads.ExpandRolePattern(config.StartCommand, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType)
+		return beads.ExpandRolePattern(roleConfig.StartCommand, d.config.TownRoot, parsed.RigName, parsed.AgentName, parsed.RoleType)
 	}
 
-	// Default command for all agents
-	defaultCmd := "exec claude --dangerously-skip-permissions"
+	// Default command for all agents - use runtime config
+	defaultCmd := "exec " + config.GetRuntimeCommand("")
 
 	// Polecats need environment variables set in the command
 	if parsed.RoleType == "polecat" {
-		bdActor := fmt.Sprintf("%s/polecats/%s", parsed.RigName, parsed.AgentName)
-		return fmt.Sprintf("export GT_ROLE=polecat GT_RIG=%s GT_POLECAT=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && %s",
-			parsed.RigName, parsed.AgentName, bdActor, bdActor, defaultCmd)
+		return config.BuildPolecatStartupCommand(parsed.RigName, parsed.AgentName, "", "")
 	}
 
 	return defaultCmd

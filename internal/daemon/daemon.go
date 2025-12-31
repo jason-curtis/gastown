@@ -15,6 +15,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/boot"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/feed"
 	"github.com/steveyegge/gastown/internal/polecat"
@@ -284,7 +285,7 @@ func (d *Daemon) ensureDeaconRunning() {
 	// Launch Claude directly (no shell respawn loop)
 	// The daemon will detect if Claude exits and restart it on next heartbeat
 	// Export GT_ROLE and BD_ACTOR so Claude inherits them (tmux SetEnvironment doesn't export to processes)
-	if err := d.tmux.SendKeys(DeaconSessionName, "export GT_ROLE=deacon BD_ACTOR=deacon GIT_AUTHOR_NAME=deacon && claude --dangerously-skip-permissions"); err != nil {
+	if err := d.tmux.SendKeys(DeaconSessionName, config.BuildAgentStartupCommand("deacon", "deacon", "", "")); err != nil {
 		d.logger.Printf("Error launching Claude in Deacon session: %v", err)
 		return
 	}
@@ -333,8 +334,13 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 
 	// Launch Claude
 	bdActor := fmt.Sprintf("%s/witness", rigName)
-	envExport := fmt.Sprintf("export GT_ROLE=witness GT_RIG=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --dangerously-skip-permissions", rigName, bdActor, bdActor)
-	if err := d.tmux.SendKeys(sessionName, envExport); err != nil {
+	envVars := map[string]string{
+		"GT_ROLE":         "witness",
+		"GT_RIG":          rigName,
+		"BD_ACTOR":        bdActor,
+		"GIT_AUTHOR_NAME": bdActor,
+	}
+	if err := d.tmux.SendKeys(sessionName, config.BuildStartupCommand(envVars, "", "")); err != nil {
 		d.logger.Printf("Error launching Claude in witness session for %s: %v", rigName, err)
 		return
 	}
@@ -631,8 +637,7 @@ func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string)
 	_ = d.tmux.SetPaneDiedHook(sessionName, agentID)
 
 	// Launch Claude with environment exported inline
-	startCmd := fmt.Sprintf("export GT_ROLE=polecat GT_RIG=%s GT_POLECAT=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --dangerously-skip-permissions",
-		rigName, polecatName, bdActor, bdActor)
+	startCmd := config.BuildPolecatStartupCommand(rigName, polecatName, "", "")
 	if err := d.tmux.SendKeys(sessionName, startCmd); err != nil {
 		return fmt.Errorf("sending startup command: %w", err)
 	}

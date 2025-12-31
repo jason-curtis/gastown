@@ -262,11 +262,12 @@ func ensureSession(t *tmux.Tmux, sessionName, workDir, role string) error {
 	// Launch Claude
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
 	var claudeCmd string
+	runtimeCmd := config.GetRuntimeCommand("")
 	if role == "deacon" {
 		// Deacon uses respawn loop
-		claudeCmd = `export GT_ROLE=deacon BD_ACTOR=deacon GIT_AUTHOR_NAME=deacon && while true; do echo "⛪ Starting Deacon session..."; claude --dangerously-skip-permissions; echo ""; echo "Deacon exited. Restarting in 2s... (Ctrl-C to stop)"; sleep 2; done`
+		claudeCmd = `export GT_ROLE=deacon BD_ACTOR=deacon GIT_AUTHOR_NAME=deacon && while true; do echo "⛪ Starting Deacon session..."; ` + runtimeCmd + `; echo ""; echo "Deacon exited. Restarting in 2s... (Ctrl-C to stop)"; sleep 2; done`
 	} else {
-		claudeCmd = fmt.Sprintf(`export GT_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --dangerously-skip-permissions`, role, role, role)
+		claudeCmd = config.BuildAgentStartupCommand(role, role, "", "")
 	}
 
 	if err := t.SendKeysDelayed(sessionName, claudeCmd, 200); err != nil {

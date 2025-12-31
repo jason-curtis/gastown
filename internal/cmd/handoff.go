@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -327,10 +328,11 @@ func buildRestartCommand(sessionName string) (string, error) {
 	// IMPORTANT: Passing "gt prime" as argument injects it as the first prompt,
 	// which triggers the agent to execute immediately. Without this, agents
 	// wait for user input despite all GUPP prompting in hooks.
+	runtimeCmd := config.GetRuntimeCommandWithPrompt("", "gt prime")
 	if gtRole != "" {
-		return fmt.Sprintf("cd %s && export GT_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && exec claude --dangerously-skip-permissions \"gt prime\"", workDir, gtRole, gtRole, gtRole), nil
+		return fmt.Sprintf("cd %s && export GT_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && exec %s", workDir, gtRole, gtRole, gtRole, runtimeCmd), nil
 	}
-	return fmt.Sprintf("cd %s && exec claude --dangerously-skip-permissions \"gt prime\"", workDir), nil
+	return fmt.Sprintf("cd %s && exec %s", workDir, runtimeCmd), nil
 }
 
 // sessionWorkDir returns the correct working directory for a session.

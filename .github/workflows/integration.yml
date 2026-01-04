@@ -29,6 +29,9 @@ jobs:
           git config --global user.name "CI Bot"
           git config --global user.email "ci@gastown.test"
 
+      - name: Generate embedded files
+        run: go generate ./internal/formula/...
+
       - name: Build
         run: go build -v ./cmd/gt
 

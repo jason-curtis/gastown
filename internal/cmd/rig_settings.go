@@ -5,8 +5,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -102,7 +102,7 @@ func runRigSettingsShow(cmd *cobra.Command, args []string) error {
 	settingsPath := filepath.Join(r.Path, "settings", "config.json")
 	settings, err := config.LoadRigSettings(settingsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, config.ErrNotFound) {
 			fmt.Printf("No settings file found at %s\n", settingsPath)
 			fmt.Printf("Use 'gt rig settings set' to create one.\n")
 			return nil
@@ -135,7 +135,7 @@ func runRigSettingsSet(cmd *cobra.Command, args []string) error {
 	// Load existing settings or create new
 	settings, err := config.LoadRigSettings(settingsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, config.ErrNotFound) {
 			// Create new settings with scaffold
 			settings = config.NewRigSettings()
 		} else {
@@ -178,7 +178,7 @@ func runRigSettingsUnset(cmd *cobra.Command, args []string) error {
 	// Load existing settings
 	settings, err := config.LoadRigSettings(settingsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, config.ErrNotFound) {
 			return fmt.Errorf("settings file not found at %s", settingsPath)
 		}
 		return fmt.Errorf("loading settings: %w", err)
@@ -234,7 +234,7 @@ func parseValue(s string) (interface{}, error) {
 // For example, "role_agents.witness" sets settings.RoleAgents["witness"].
 func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 	keys := strings.Split(keyPath, ".")
-	if len(keys) == 0 {
+	if len(keys) == 0 || (len(keys) == 1 && keys[0] == "") {
 		return fmt.Errorf("empty key path")
 	}
 

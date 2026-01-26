@@ -426,6 +426,37 @@ func TestRigSettingsSet(t *testing.T) {
 			t.Logf("Setting invalid path returned error (expected): %v", err)
 		}
 	})
+
+	t.Run("error case: unknown top-level key", func(t *testing.T) {
+		townRoot, rigName := setupTestRigForSettings(t)
+		rigPath := filepath.Join(townRoot, rigName)
+
+		// Create settings file
+		settingsPath := filepath.Join(rigPath, "settings", "config.json")
+		settings := config.NewRigSettings()
+		if err := config.SaveRigSettings(settingsPath, settings); err != nil {
+			t.Fatalf("save settings: %v", err)
+		}
+
+		// Try to set an unknown top-level key (regression test for false success bug)
+		cmd := rigSettingsSetCmd
+		err := runRigSettingsSet(cmd, []string{rigName, "something_else", "blah"})
+		if err == nil {
+			t.Fatal("expected error for unknown top-level key 'something_else'")
+		}
+		if !strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("error message should mention 'unknown key', got: %v", err)
+		}
+
+		// Verify the file wasn't modified
+		loaded, err := config.LoadRigSettings(settingsPath)
+		if err != nil {
+			t.Fatalf("load settings: %v", err)
+		}
+		if loaded.Agent != "" {
+			t.Errorf("Agent should be empty, got %q", loaded.Agent)
+		}
+	})
 }
 
 func TestRigSettingsUnset(t *testing.T) {

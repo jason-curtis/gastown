@@ -293,6 +293,43 @@ func setNestedValue(obj interface{}, keyPath string, value interface{}) error {
 		return fmt.Errorf("unmarshaling result: %w", err)
 	}
 
+	// Verify the value was actually set by marshaling back and checking.
+	// Unknown fields are silently dropped by json.Unmarshal, so we need to
+	// confirm the key exists in the output.
+	var verifyMap map[string]interface{}
+	checkData, err := json.Marshal(obj)
+	if err != nil {
+		return fmt.Errorf("marshaling for verification: %w", err)
+	}
+	if err := json.Unmarshal(checkData, &verifyMap); err != nil {
+		return fmt.Errorf("unmarshaling for verification: %w", err)
+	}
+
+	// Navigate to the key in the verified output
+	verifyCurrent := verifyMap
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			// This is the final key - check if it exists
+			if _, exists := verifyCurrent[key]; !exists {
+				// The field doesn't exist in the struct definition
+				// List all valid top-level keys from RigSettings
+				validKeys := []string{
+					"type", "version",
+					"merge_queue", "theme", "namepool", "crew", "workflow",
+					"runtime", "agent", "agents", "role_agents",
+				}
+				return fmt.Errorf("unknown key %q (valid top-level keys: %s)", keyPath, strings.Join(validKeys, ", "))
+			}
+			break
+		}
+		// Navigate deeper
+		next, ok := verifyCurrent[key].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid key path %q: %s is not an object", keyPath, key)
+		}
+		verifyCurrent = next
+	}
+
 	return nil
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/feed"
 	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/ratelimit"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
@@ -247,6 +248,11 @@ func (d *Daemon) heartbeat(state *State) {
 	// 0. Ensure Dolt server is running (if configured)
 	// This must happen before beads operations that depend on Dolt.
 	d.ensureDoltServerRunning()
+
+	// 0.5. Check for rate limit reset
+	// If rate limit has expired, poke all sessions to continue.
+	// This runs early to wake agents before other checks try to restart them.
+	d.checkRateLimitReset()
 
 	// 1. Ensure Deacon is running (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
@@ -1203,4 +1209,109 @@ func (d *Daemon) cleanupOrphanedProcesses() {
 			}
 		}
 	}
+}
+
+// checkRateLimitReset checks if a rate limit has expired and wakes agents if so.
+// This is called early in the heartbeat to wake rate-limited sessions before
+// other checks attempt to restart them as crashed.
+func (d *Daemon) checkRateLimitReset() {
+	state, err := ratelimit.LoadState(d.config.TownRoot)
+	if err != nil {
+		d.logger.Printf("Warning: failed to load rate limit state: %v", err)
+		return
+	}
+
+	if state == nil {
+		// No rate limit state - nothing to do
+		return
+	}
+
+	if !state.Active {
+		// Rate limit not active - nothing to do
+		return
+	}
+
+	// Check if we should wake agents
+	if !state.ShouldWake() {
+		// Not time to wake yet, or max attempts reached
+		if state.WakeAttempts >= ratelimit.MaxWakeAttempts {
+			d.logger.Printf("Rate limit: max wake attempts reached (%d), clearing state", state.WakeAttempts)
+			if err := ratelimit.ClearState(d.config.TownRoot); err != nil {
+				d.logger.Printf("Warning: failed to clear rate limit state: %v", err)
+			}
+		} else {
+			d.logger.Printf("Rate limit active, reset at %s (in %s)",
+				state.ResetAt.Format(time.RFC3339),
+				time.Until(state.ResetAt.Add(ratelimit.WakeBuffer)).Round(time.Minute))
+		}
+		return
+	}
+
+	// Time to wake! Record the attempt first
+	state.RecordWakeAttempt()
+	if err := ratelimit.SaveState(d.config.TownRoot, state); err != nil {
+		d.logger.Printf("Warning: failed to save rate limit state: %v", err)
+	}
+
+	d.logger.Printf("Rate limit reset - waking all agents (attempt %d/%d)",
+		state.WakeAttempts, ratelimit.MaxWakeAttempts)
+
+	// Wake all agents
+	woken := d.wakeRateLimitedAgents()
+
+	d.logger.Printf("Woke %d rate-limited agent(s)", woken)
+
+	// Log feed event
+	_ = events.LogFeed(events.TypeRateLimitReset, "daemon",
+		map[string]interface{}{
+			"reset_at":      state.ResetAt.Format(time.RFC3339),
+			"wake_attempt":  state.WakeAttempts,
+			"agents_woken":  woken,
+		})
+
+	// Clear the rate limit state after successful wake
+	if err := ratelimit.ClearState(d.config.TownRoot); err != nil {
+		d.logger.Printf("Warning: failed to clear rate limit state: %v", err)
+	}
+}
+
+// wakeRateLimitedAgents sends a continuation message to all active tmux sessions.
+// Returns the number of sessions that were poked.
+func (d *Daemon) wakeRateLimitedAgents() int {
+	// Get all Gas Town tmux sessions (prefixed with "gt-" or "hq-")
+	sessions, err := d.tmux.ListSessions()
+	if err != nil {
+		d.logger.Printf("Error listing sessions for rate limit wake: %v", err)
+		return 0
+	}
+
+	woken := 0
+	for _, sess := range sessions {
+		// Only wake Gas Town sessions
+		if !strings.HasPrefix(sess, "gt-") && !strings.HasPrefix(sess, "hq-") {
+			continue
+		}
+
+		// Send continuation message
+		// First send "1" in case there's a retry prompt, then send a continuation message
+		if err := d.tmux.SendKeys(sess, "1"); err != nil {
+			d.logger.Printf("Warning: failed to send retry key to %s: %v", sess, err)
+			continue
+		}
+
+		// Brief pause to let the retry option process
+		time.Sleep(500 * time.Millisecond)
+
+		// Send continuation prompt
+		msg := "Your rate limit has reset. Continue your work from where you left off."
+		if err := d.tmux.SendKeys(sess, msg); err != nil {
+			d.logger.Printf("Warning: failed to send wake message to %s: %v", sess, err)
+			continue
+		}
+
+		d.logger.Printf("Poked rate-limited session: %s", sess)
+		woken++
+	}
+
+	return woken
 }

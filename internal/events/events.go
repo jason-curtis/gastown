@@ -68,6 +68,9 @@ const (
 	TypeMerged       = "merged"
 	TypeMergeFailed  = "merge_failed"
 	TypeMergeSkipped = "merge_skipped"
+
+	// Rate limit events
+	TypeRateLimitReset = "rate_limit_reset"
 )
 
 // EventsFile is the name of the raw events log.

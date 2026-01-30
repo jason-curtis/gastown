@@ -18,6 +18,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/boot"
+	"github.com/steveyegge/gastown/internal/usagelimit"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
@@ -310,6 +311,11 @@ func (d *Daemon) heartbeat(state *State) {
 	// These are Task tool subagents that didn't clean up after completion.
 	// This is a safety net - Deacon patrol also does this more frequently.
 	d.cleanupOrphanedProcesses()
+
+	// 13. Scan for usage limits (rate limits that block agents)
+	// Agents can't self-report when rate limited, so the daemon detects externally.
+	// This is pure Go - no AI needed, just pattern matching on tmux output.
+	d.scanUsageLimits()
 
 	// Update state
 	state.LastHeartbeat = time.Now()
@@ -1203,4 +1209,98 @@ func (d *Daemon) cleanupOrphanedProcesses() {
 			}
 		}
 	}
+}
+
+// scanUsageLimits scans active Gas Town sessions for usage limit indicators.
+// Blocked agents cannot self-report, so the daemon detects externally by
+// scanning tmux output for rate limit patterns.
+//
+// This is pure Go - no AI needed. Pattern matching on tmux capture-pane output.
+func (d *Daemon) scanUsageLimits() {
+	// Get all tmux sessions
+	sessions, err := d.tmux.ListSessions()
+	if err != nil {
+		d.logger.Printf("Warning: failed to list sessions for usage limit scan: %v", err)
+		return
+	}
+
+	// Filter to Gas Town sessions only
+	var gtSessions []string
+	for _, sess := range sessions {
+		if strings.HasPrefix(sess, "gt-") || strings.HasPrefix(sess, "hq-") {
+			gtSessions = append(gtSessions, sess)
+		}
+	}
+
+	if len(gtSessions) == 0 {
+		return // Nothing to scan
+	}
+
+	// Usage limit patterns to detect
+	patterns := []string{
+		"rate_limit_error",
+		"429",
+		"rate limit",
+		"Rate limit",
+		"usage limit",
+		"Usage limit",
+		"you've reached your limit",
+		"You've reached your limit",
+		"retry-after",
+		"Retry-After",
+		"too many requests",
+		"Too Many Requests",
+		"requests per minute",
+		"tokens per minute",
+		"TPM",
+		"RPM",
+	}
+
+	var detected []string
+
+	for _, sess := range gtSessions {
+		// Capture recent output (last 100 lines)
+		output, err := d.tmux.CapturePane(sess, 100)
+		if err != nil {
+			// Session might have died, skip it
+			continue
+		}
+
+		// Check for usage limit patterns
+		for _, pattern := range patterns {
+			if strings.Contains(output, pattern) {
+				detected = append(detected, sess)
+				d.logger.Printf("Usage limit detected in session %s: pattern '%s'", sess, pattern)
+				break // Only report once per session
+			}
+		}
+	}
+
+	if len(detected) == 0 {
+		return // No usage limits detected
+	}
+
+	// Check if we already have an active usage limit recorded
+	isLimited, _, err := usagelimit.IsLimited(d.config.TownRoot)
+	if err != nil {
+		d.logger.Printf("Warning: failed to check usage limit state: %v", err)
+	}
+	if isLimited {
+		// Already tracking a usage limit, don't re-record
+		d.logger.Printf("Usage limit already active, skipping re-record")
+		return
+	}
+
+	// Record the usage limit - default to 5 minute reset
+	// Claude Pro/Max limits typically reset in minutes, not hours
+	resetDuration := 5 * time.Minute
+	reason := fmt.Sprintf("Daemon detected usage limit in sessions: %s", strings.Join(detected, ", "))
+
+	if err := usagelimit.RecordUsageLimit(d.config.TownRoot, resetDuration, "daemon", reason); err != nil {
+		d.logger.Printf("Warning: failed to record usage limit: %v", err)
+		return
+	}
+
+	d.logger.Printf("Recorded usage limit state (reset in %s) - detected in %d session(s)",
+		resetDuration, len(detected))
 }

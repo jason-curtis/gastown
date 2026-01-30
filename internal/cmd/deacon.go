@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/steveyegge/gastown/internal/usagelimit"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -288,6 +289,30 @@ Examples:
 	RunE: runDeaconZombieScan,
 }
 
+var deaconUsagelimitScanCmd = &cobra.Command{
+	Use:   "usagelimit-scan",
+	Short: "Scan active sessions for usage limit messages",
+	Long: `Scan active sessions for usage limit messages.
+
+Captures recent tmux output from active Gas Town sessions and checks for
+usage limit patterns. If detected, records the usage limit state so the
+daemon can wake agents after the limit expires.
+
+This is part of the Deacon patrol - detecting usage-limited sessions that
+are blocked and cannot self-report.
+
+Detection patterns:
+- Anthropic API: rate_limit_error, HTTP 429
+- retry-after headers and timestamps
+- Subscription limits: "you've reached your limit"
+- Token limits: TPM, RPM references
+
+Examples:
+  gt deacon usagelimit-scan           # Scan and record usage limits
+  gt deacon usagelimit-scan --dry-run # Just show detections, don't record`,
+	RunE: runDeaconUsagelimitScan,
+}
+
 var (
 	triggerTimeout time.Duration
 
@@ -309,6 +334,9 @@ var (
 
 	// Zombie scan flags
 	zombieScanDryRun bool
+
+	// Usagelimit scan flags
+	usagelimitScanDryRun bool
 )
 
 func init() {
@@ -327,6 +355,7 @@ func init() {
 	deaconCmd.AddCommand(deaconResumeCmd)
 	deaconCmd.AddCommand(deaconCleanupOrphansCmd)
 	deaconCmd.AddCommand(deaconZombieScanCmd)
+	deaconCmd.AddCommand(deaconUsagelimitScanCmd)
 
 	// Flags for trigger-pending
 	deaconTriggerPendingCmd.Flags().DurationVar(&triggerTimeout, "timeout", 2*time.Second,
@@ -359,6 +388,10 @@ func init() {
 	// Flags for zombie-scan
 	deaconZombieScanCmd.Flags().BoolVar(&zombieScanDryRun, "dry-run", false,
 		"List zombies without killing them")
+
+	// Flags for usagelimit-scan
+	deaconUsagelimitScanCmd.Flags().BoolVar(&usagelimitScanDryRun, "dry-run", false,
+		"Show detections without recording state")
 
 	deaconStartCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
 	deaconAttachCmd.Flags().StringVar(&deaconAgentOverride, "agent", "", "Agent alias to run the Deacon with (overrides town default)")
@@ -1268,6 +1301,111 @@ func runDeaconZombieScan(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("%s %s\n", style.Bold.Render("✓"), summary)
 	}
+
+	return nil
+}
+
+// runDeaconUsagelimitScan scans active sessions for usage limit messages.
+func runDeaconUsagelimitScan(cmd *cobra.Command, args []string) error {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+
+	t := tmux.NewTmux()
+
+	// Get all sessions
+	sessions, err := t.ListSessions()
+	if err != nil {
+		return fmt.Errorf("listing sessions: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Printf("%s No tmux sessions running\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	// Filter to Gas Town sessions only
+	var gtSessions []string
+	for _, sess := range sessions {
+		if strings.HasPrefix(sess, "gt-") || strings.HasPrefix(sess, "hq-") {
+			gtSessions = append(gtSessions, sess)
+		}
+	}
+
+	if len(gtSessions) == 0 {
+		fmt.Printf("%s No Gas Town sessions running\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	fmt.Printf("%s Scanning %d session(s) for usage limits...\n",
+		style.Bold.Render("●"), len(gtSessions))
+
+	var detected []string
+
+	// Usage limit patterns to detect
+	patterns := []string{
+		"rate_limit_error",
+		"429",
+		"rate limit",
+		"Rate limit",
+		"usage limit",
+		"Usage limit",
+		"you've reached your limit",
+		"You've reached your limit",
+		"retry-after",
+		"Retry-After",
+		"too many requests",
+		"Too Many Requests",
+		"requests per minute",
+		"tokens per minute",
+		"TPM",
+		"RPM",
+	}
+
+	for _, sess := range gtSessions {
+		// Capture recent output (last 100 lines)
+		output, err := t.CapturePane(sess, 100)
+		if err != nil {
+			// Session might have died, skip it
+			continue
+		}
+
+		// Check for usage limit patterns
+		for _, pattern := range patterns {
+			if strings.Contains(output, pattern) {
+				detected = append(detected, sess)
+				fmt.Printf("  %s %s: detected '%s'\n",
+					style.Bold.Render("!"), sess, pattern)
+				break // Only report once per session
+			}
+		}
+	}
+
+	if len(detected) == 0 {
+		fmt.Printf("%s No usage limits detected\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	fmt.Printf("%s Found usage limit indicators in %d session(s)\n",
+		style.Bold.Render("⚠"), len(detected))
+
+	if usagelimitScanDryRun {
+		fmt.Printf("%s Dry run - no state recorded\n", style.Dim.Render("ℹ"))
+		return nil
+	}
+
+	// Record usage limit state - default to 5 minute reset if we can't parse retry-after
+	// The daemon will check ShouldWake() and attempt to wake agents after this time
+	resetDuration := 5 * time.Minute
+	reason := fmt.Sprintf("Usage limit detected in sessions: %s", strings.Join(detected, ", "))
+
+	if err := usagelimit.RecordUsageLimit(townRoot, resetDuration, "deacon", reason); err != nil {
+		return fmt.Errorf("recording usage limit: %w", err)
+	}
+
+	fmt.Printf("%s Usage limit state recorded (reset in %s)\n",
+		style.Bold.Render("✓"), resetDuration)
 
 	return nil
 }

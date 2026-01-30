@@ -433,9 +433,52 @@ gt mail send mayor/ -s "Health: <rig> <component> unresponsive" \\
 Reset unresponsive_cycles to 0 when component responds normally."""
 
 [[steps]]
+id = "usagelimit-scan"
+title = "Scan for usage-limited sessions"
+needs = ["health-scan"]
+description = """
+Scan active sessions for usage limit messages.
+
+When Claude sessions hit API usage limits, they stop processing but cannot
+self-report (the blocked agent can't call any commands). The Deacon detects
+this by scanning tmux output for usage limit patterns.
+
+**Run the scan:**
+```bash
+gt deacon usagelimit-scan
+```
+
+This command:
+1. Lists all Gas Town tmux sessions (gt-* and hq-*)
+2. Captures recent output (last 100 lines) from each
+3. Checks for usage limit patterns:
+   - rate_limit_error
+   - HTTP 429
+   - "you've reached your limit"
+   - retry-after headers
+   - TPM/RPM references
+4. If detected, records usage limit state to .runtime/usagelimit/state.json
+
+**If usage limit detected:**
+The state is recorded with a default 5-minute reset time. The daemon will
+check ShouldWake() and attempt to wake agents after this period.
+
+**Dry run mode:**
+```bash
+gt deacon usagelimit-scan --dry-run
+# Just shows detections without recording state
+```
+
+**Why this matters:**
+Blocked agents can't self-report. This external detection allows the system
+to track when limits are hit and automatically wake agents when limits reset.
+
+**Exit criteria:** Usage limit scan completed."""
+
+[[steps]]
 id = "zombie-scan"
 title = "Detect zombie polecats (NO KILL AUTHORITY)"
-needs = ["health-scan"]
+needs = ["usagelimit-scan"]
 description = """
 Defense-in-depth DETECTION of zombie polecats that Witness should have cleaned.
 

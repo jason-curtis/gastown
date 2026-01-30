@@ -1,4 +1,4 @@
-package ratelimit
+package usagelimit
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 
 func TestGetStateFile(t *testing.T) {
 	townRoot := "/tmp/test-town"
-	expected := "/tmp/test-town/.runtime/ratelimit/state.json"
+	expected := "/tmp/test-town/.runtime/usagelimit/state.json"
 	result := GetStateFile(townRoot)
 
 	if result != expected {
@@ -29,12 +29,12 @@ func TestGetState_NonExistent(t *testing.T) {
 	}
 }
 
-func TestRecordRateLimit_CreatesStateFile(t *testing.T) {
+func TestRecordUsageLimit_CreatesStateFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test-agent", "API rate limit")
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test-agent", "API usage limit")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
 	// Verify file exists
@@ -57,29 +57,29 @@ func TestRecordRateLimit_CreatesStateFile(t *testing.T) {
 	if state.RecordedBy != "test-agent" {
 		t.Errorf("expected RecordedBy='test-agent', got %q", state.RecordedBy)
 	}
-	if state.Reason != "API rate limit" {
-		t.Errorf("expected Reason='API rate limit', got %q", state.Reason)
+	if state.Reason != "API usage limit" {
+		t.Errorf("expected Reason='API usage limit', got %q", state.Reason)
 	}
 	if state.RetryAfterSeconds != 300 {
 		t.Errorf("expected RetryAfterSeconds=300, got %d", state.RetryAfterSeconds)
 	}
 }
 
-func TestIsRateLimited_Active(t *testing.T) {
+func TestIsLimited_Active(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit that will reset in 5 minutes
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test", "test limit")
+	// Record a usage limit that will reset in 5 minutes
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test", "test limit")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
-	isLimited, state, err := IsRateLimited(tmpDir)
+	isLimited, state, err := IsLimited(tmpDir)
 	if err != nil {
-		t.Fatalf("IsRateLimited error: %v", err)
+		t.Fatalf("IsLimited error: %v", err)
 	}
 	if !isLimited {
-		t.Error("expected isLimited=true for active rate limit")
+		t.Error("expected isLimited=true for active usage limit")
 	}
 	if state == nil {
 		t.Fatal("expected non-nil state")
@@ -89,10 +89,10 @@ func TestIsRateLimited_Active(t *testing.T) {
 	}
 }
 
-func TestIsRateLimited_Expired(t *testing.T) {
+func TestIsLimited_Expired(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit that already expired (negative duration creates past reset time)
+	// Record a usage limit that already expired (negative duration creates past reset time)
 	state := &State{
 		Active:     true,
 		ResetAt:    time.Now().Add(-1 * time.Minute), // Already past
@@ -102,12 +102,12 @@ func TestIsRateLimited_Expired(t *testing.T) {
 		t.Fatalf("SaveState error: %v", err)
 	}
 
-	isLimited, stateOut, err := IsRateLimited(tmpDir)
+	isLimited, stateOut, err := IsLimited(tmpDir)
 	if err != nil {
-		t.Fatalf("IsRateLimited error: %v", err)
+		t.Fatalf("IsLimited error: %v", err)
 	}
 	if isLimited {
-		t.Error("expected isLimited=false for expired rate limit")
+		t.Error("expected isLimited=false for expired usage limit")
 	}
 	if stateOut == nil {
 		t.Fatal("expected non-nil state (for reference)")
@@ -117,10 +117,10 @@ func TestIsRateLimited_Expired(t *testing.T) {
 func TestShouldWake_NotYetReset(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit that resets in 5 minutes
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test", "test limit")
+	// Record a usage limit that resets in 5 minutes
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test", "test limit")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
 	shouldWake, state, err := ShouldWake(tmpDir)
@@ -138,7 +138,7 @@ func TestShouldWake_NotYetReset(t *testing.T) {
 func TestShouldWake_AfterReset(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit that already reset
+	// Record a usage limit that already reset
 	state := &State{
 		Active:       true,
 		ResetAt:      time.Now().Add(-1 * time.Minute), // Already past
@@ -164,7 +164,7 @@ func TestShouldWake_AfterReset(t *testing.T) {
 func TestShouldWake_MaxAttemptsReached(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit with max attempts reached
+	// Record a usage limit with max attempts reached
 	state := &State{
 		Active:          true,
 		ResetAt:         time.Now().Add(-1 * time.Minute), // Already past
@@ -188,7 +188,7 @@ func TestShouldWake_MaxAttemptsReached(t *testing.T) {
 func TestShouldWake_TooSoonAfterLastAttempt(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit with a recent wake attempt
+	// Record a usage limit with a recent wake attempt
 	state := &State{
 		Active:          true,
 		ResetAt:         time.Now().Add(-1 * time.Minute), // Already past
@@ -212,7 +212,7 @@ func TestShouldWake_TooSoonAfterLastAttempt(t *testing.T) {
 func TestRecordWakeAttempt(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record initial rate limit
+	// Record initial usage limit
 	state := &State{
 		Active:       true,
 		ResetAt:      time.Now().Add(-1 * time.Minute),
@@ -244,10 +244,10 @@ func TestRecordWakeAttempt(t *testing.T) {
 func TestClear(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a rate limit state
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test", "test limit")
+	// Create a usage limit state
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test", "test limit")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
 	// Verify it exists
@@ -279,10 +279,10 @@ func TestClear_NonExistent(t *testing.T) {
 func TestTimeUntilReset_Active(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record a rate limit that resets in 5 minutes
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test", "test limit")
+	// Record a usage limit that resets in 5 minutes
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test", "test limit")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
 	remaining, err := TimeUntilReset(tmpDir)
@@ -299,7 +299,7 @@ func TestTimeUntilReset_Active(t *testing.T) {
 func TestTimeUntilReset_Expired(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Record an expired rate limit
+	// Record an expired usage limit
 	state := &State{
 		Active:     true,
 		ResetAt:    time.Now().Add(-1 * time.Minute),
@@ -333,20 +333,20 @@ func TestTimeUntilReset_NoState(t *testing.T) {
 func TestStateFile_CreatesParentDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// The .runtime/ratelimit directory shouldn't exist yet
-	ratelimitDir := filepath.Join(tmpDir, ".runtime", "ratelimit")
-	if _, err := os.Stat(ratelimitDir); !os.IsNotExist(err) {
+	// The .runtime/usagelimit directory shouldn't exist yet
+	usagelimitDir := filepath.Join(tmpDir, ".runtime", "usagelimit")
+	if _, err := os.Stat(usagelimitDir); !os.IsNotExist(err) {
 		t.Fatal("directory should not exist before test")
 	}
 
-	// RecordRateLimit should create parent directories
-	err := RecordRateLimit(tmpDir, 5*time.Minute, "test", "test")
+	// RecordUsageLimit should create parent directories
+	err := RecordUsageLimit(tmpDir, 5*time.Minute, "test", "test")
 	if err != nil {
-		t.Fatalf("RecordRateLimit error: %v", err)
+		t.Fatalf("RecordUsageLimit error: %v", err)
 	}
 
 	// Directory should now exist
-	if _, err := os.Stat(ratelimitDir); err != nil {
-		t.Errorf("directory should exist after RecordRateLimit: %v", err)
+	if _, err := os.Stat(usagelimitDir); err != nil {
+		t.Errorf("directory should exist after RecordUsageLimit: %v", err)
 	}
 }

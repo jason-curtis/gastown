@@ -12,65 +12,65 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/ratelimit"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/usagelimit"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 var (
-	ratelimitSession string
-	ratelimitVerbose bool
-	ratelimitReason  string
-	ratelimitMinutes int
+	usagelimitSession string
+	usagelimitVerbose bool
+	usagelimitReason  string
+	usagelimitMinutes int
 )
 
 func init() {
-	rootCmd.AddCommand(ratelimitCmd)
-	ratelimitCmd.AddCommand(ratelimitRecordCmd)
-	ratelimitCmd.AddCommand(ratelimitStatusCmd)
-	ratelimitCmd.AddCommand(ratelimitClearCmd)
-	ratelimitCmd.AddCommand(ratelimitSetCmd)
+	rootCmd.AddCommand(usagelimitCmd)
+	usagelimitCmd.AddCommand(usagelimitRecordCmd)
+	usagelimitCmd.AddCommand(usagelimitStatusCmd)
+	usagelimitCmd.AddCommand(usagelimitClearCmd)
+	usagelimitCmd.AddCommand(usagelimitSetCmd)
 
-	ratelimitRecordCmd.Flags().StringVar(&ratelimitSession, "session", "", "Session name (e.g., gt-gastown-toast)")
-	ratelimitRecordCmd.Flags().BoolVarP(&ratelimitVerbose, "verbose", "v", false, "Show debug output")
+	usagelimitRecordCmd.Flags().StringVar(&usagelimitSession, "session", "", "Session name (e.g., gt-gastown-toast)")
+	usagelimitRecordCmd.Flags().BoolVarP(&usagelimitVerbose, "verbose", "v", false, "Show debug output")
 
-	ratelimitSetCmd.Flags().IntVarP(&ratelimitMinutes, "minutes", "m", 60, "Minutes until rate limit resets")
-	ratelimitSetCmd.Flags().StringVarP(&ratelimitReason, "reason", "r", "Manual rate limit", "Reason for rate limit")
+	usagelimitSetCmd.Flags().IntVarP(&usagelimitMinutes, "minutes", "m", 60, "Minutes until usage limit resets")
+	usagelimitSetCmd.Flags().StringVarP(&usagelimitReason, "reason", "r", "Manual usage limit", "Reason for usage limit")
 }
 
-var ratelimitCmd = &cobra.Command{
-	Use:   "ratelimit",
-	Short: "Manage rate limit state for Claude Pro/Max sessions",
-	Long: `Manage rate limit state for Claude Pro/Max sessions.
+var usagelimitCmd = &cobra.Command{
+	Use:   "usagelimit",
+	Short: "Manage usage limit state for Claude Pro/Max sessions",
+	Long: `Manage usage limit state for Claude Pro/Max sessions.
 
-When Claude Code sessions hit API rate limits, they stop processing. This command
-provides a mechanism to record when rate limits are hit, when they reset, and
-allows the daemon to automatically wake agents when the rate limit period ends.
+When Claude Code sessions hit API usage limits, they stop processing. This command
+provides a mechanism to record when usage limits are hit, when they reset, and
+allows the daemon to automatically wake agents when the usage limit period ends.
 
 Subcommands:
-  gt ratelimit record    # Detect and record rate limit from session transcript (Stop hook)
-  gt ratelimit status    # Show current rate limit state
-  gt ratelimit clear     # Clear rate limit state (after manual verification)
-  gt ratelimit set       # Manually set rate limit state
+  gt usagelimit record    # Detect and record usage limit from session transcript (Stop hook)
+  gt usagelimit status    # Show current usage limit state
+  gt usagelimit clear     # Clear usage limit state (after manual verification)
+  gt usagelimit set       # Manually set usage limit state
 
 The record subcommand is designed to be called from a Claude Code Stop hook.
-It parses the session transcript for rate limit messages and records the state.`,
+It parses the session transcript for usage limit messages and records the state.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
 }
 
-var ratelimitRecordCmd = &cobra.Command{
+var usagelimitRecordCmd = &cobra.Command{
 	Use:   "record",
-	Short: "Detect and record rate limit from session transcript (Stop hook)",
-	Long: `Detect rate limit from session transcript and record state.
+	Short: "Detect and record usage limit from session transcript (Stop hook)",
+	Long: `Detect usage limit from session transcript and record state.
 
 This command is intended to be called from a Claude Code Stop hook.
 It reads the session transcript from ~/.claude/projects/... and searches
-for rate limit error messages. If found, it records the rate limit state
+for usage limit error messages. If found, it records the usage limit state
 so the daemon can wake agents after the limit resets.
 
-Rate limit patterns detected:
+Usage limit patterns detected:
 - "rate limit" / "rate_limit" / "ratelimit"
 - "usage limit" / "usage_limit"
 - HTTP 429 errors
@@ -78,47 +78,47 @@ Rate limit patterns detected:
 - Claude-specific: "You've reached your limit"
 
 Examples:
-  gt ratelimit record --session gt-gastown-toast
-  gt ratelimit record  # Auto-detect from GT_SESSION or tmux`,
-	RunE: runRatelimitRecord,
+  gt usagelimit record --session gt-gastown-toast
+  gt usagelimit record  # Auto-detect from GT_SESSION or tmux`,
+	RunE: runUsagelimitRecord,
 }
 
-var ratelimitStatusCmd = &cobra.Command{
+var usagelimitStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show current rate limit state",
-	Long: `Show current rate limit state.
+	Short: "Show current usage limit state",
+	Long: `Show current usage limit state.
 
-Displays whether a rate limit is currently active, when it's expected to reset,
+Displays whether a usage limit is currently active, when it's expected to reset,
 and any wake attempt tracking information.`,
-	RunE: runRatelimitStatus,
+	RunE: runUsagelimitStatus,
 }
 
-var ratelimitClearCmd = &cobra.Command{
+var usagelimitClearCmd = &cobra.Command{
 	Use:   "clear",
-	Short: "Clear rate limit state",
-	Long: `Clear rate limit state.
+	Short: "Clear usage limit state",
+	Long: `Clear usage limit state.
 
-Use this after manually verifying the rate limit has reset, or to force
+Use this after manually verifying the usage limit has reset, or to force
 the system to attempt waking agents again.`,
-	RunE: runRatelimitClear,
+	RunE: runUsagelimitClear,
 }
 
-var ratelimitSetCmd = &cobra.Command{
+var usagelimitSetCmd = &cobra.Command{
 	Use:   "set",
-	Short: "Manually set rate limit state",
-	Long: `Manually set rate limit state.
+	Short: "Manually set usage limit state",
+	Long: `Manually set usage limit state.
 
-Use this when you know a rate limit is in effect but it wasn't auto-detected.
+Use this when you know a usage limit is in effect but it wasn't auto-detected.
 
 Examples:
-  gt ratelimit set --minutes 60 --reason "Claude Pro limit"
-  gt ratelimit set -m 30 -r "API rate limit"`,
-	RunE: runRatelimitSet,
+  gt usagelimit set --minutes 60 --reason "Claude Pro limit"
+  gt usagelimit set -m 30 -r "API usage limit"`,
+	RunE: runUsagelimitSet,
 }
 
-func runRatelimitRecord(cmd *cobra.Command, args []string) error {
+func runUsagelimitRecord(cmd *cobra.Command, args []string) error {
 	// Get session from flag or environment
-	session := ratelimitSession
+	session := usagelimitSession
 	if session == "" {
 		session = os.Getenv("GT_SESSION")
 	}
@@ -134,14 +134,14 @@ func runRatelimitRecord(cmd *cobra.Command, args []string) error {
 	if workDir == "" {
 		var err error
 		workDir, err = getTmuxSessionWorkDir(session)
-		if err != nil && ratelimitVerbose {
-			fmt.Fprintf(os.Stderr, "[ratelimit] could not get workdir: %v\n", err)
+		if err != nil && usagelimitVerbose {
+			fmt.Fprintf(os.Stderr, "[usagelimit] could not get workdir: %v\n", err)
 		}
 	}
 
 	if workDir == "" {
-		if ratelimitVerbose {
-			fmt.Fprintf(os.Stderr, "[ratelimit] no workdir available, cannot check transcript\n")
+		if usagelimitVerbose {
+			fmt.Fprintf(os.Stderr, "[usagelimit] no workdir available, cannot check transcript\n")
 		}
 		return nil // Silent exit - nothing to do
 	}
@@ -149,17 +149,17 @@ func runRatelimitRecord(cmd *cobra.Command, args []string) error {
 	// Find and read transcript
 	transcript, err := readTranscript(workDir)
 	if err != nil {
-		if ratelimitVerbose {
-			fmt.Fprintf(os.Stderr, "[ratelimit] could not read transcript: %v\n", err)
+		if usagelimitVerbose {
+			fmt.Fprintf(os.Stderr, "[usagelimit] could not read transcript: %v\n", err)
 		}
 		return nil // Silent exit
 	}
 
-	// Check for rate limit patterns
-	isRateLimited, resetDuration, reason := detectRateLimit(transcript)
-	if !isRateLimited {
-		if ratelimitVerbose {
-			fmt.Fprintf(os.Stderr, "[ratelimit] no rate limit detected in transcript\n")
+	// Check for usage limit patterns
+	isLimited, resetDuration, reason := detectUsageLimit(transcript)
+	if !isLimited {
+		if usagelimitVerbose {
+			fmt.Fprintf(os.Stderr, "[usagelimit] no usage limit detected in transcript\n")
 		}
 		return nil
 	}
@@ -170,17 +170,17 @@ func runRatelimitRecord(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting town root: %w", err)
 	}
 
-	// Record the rate limit
+	// Record the usage limit
 	recordedBy := session
 	if recordedBy == "" {
 		recordedBy = "unknown"
 	}
 
-	if err := ratelimit.RecordRateLimit(townRoot, resetDuration, recordedBy, reason); err != nil {
-		return fmt.Errorf("recording rate limit: %w", err)
+	if err := usagelimit.RecordUsageLimit(townRoot, resetDuration, recordedBy, reason); err != nil {
+		return fmt.Errorf("recording usage limit: %w", err)
 	}
 
-	fmt.Printf("%s Rate limit detected and recorded\n", style.Success.Render("⚠"))
+	fmt.Printf("%s Usage limit detected and recorded\n", style.Success.Render("⚠"))
 	fmt.Printf("  Reason: %s\n", reason)
 	fmt.Printf("  Resets in: %s\n", resetDuration.Round(time.Minute))
 	fmt.Printf("  Recorded by: %s\n", recordedBy)
@@ -188,36 +188,36 @@ func runRatelimitRecord(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRatelimitStatus(cmd *cobra.Command, args []string) error {
+func runUsagelimitStatus(cmd *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("getting town root: %w", err)
 	}
 
-	state, err := ratelimit.GetState(townRoot)
+	state, err := usagelimit.GetState(townRoot)
 	if err != nil {
-		return fmt.Errorf("reading rate limit state: %w", err)
+		return fmt.Errorf("reading usage limit state: %w", err)
 	}
 
 	if state == nil || !state.Active {
-		fmt.Printf("%s No active rate limit\n", style.Success.Render("✓"))
+		fmt.Printf("%s No active usage limit\n", style.Success.Render("✓"))
 		return nil
 	}
 
 	// Check if expired
-	isLimited, _, _ := ratelimit.IsRateLimited(townRoot)
+	isLimited, _, _ := usagelimit.IsLimited(townRoot)
 
 	headerStyle := lipgloss.NewStyle().Bold(true)
 
 	if isLimited {
-		fmt.Printf("%s Rate limit ACTIVE\n", style.Warning.Render("⚠"))
+		fmt.Printf("%s Usage limit ACTIVE\n", style.Warning.Render("⚠"))
 	} else {
-		fmt.Printf("%s Rate limit EXPIRED (awaiting wake)\n", style.Info.Render("○"))
+		fmt.Printf("%s Usage limit EXPIRED (awaiting wake)\n", style.Info.Render("○"))
 	}
 
 	fmt.Printf("\n%s\n", headerStyle.Render("State:"))
 	fmt.Printf("  Reset at:      %s\n", state.ResetAt.Local().Format(time.RFC1123))
-	fmt.Printf("  Time remaining: %s\n", formatRatelimitDuration(time.Until(state.ResetAt)))
+	fmt.Printf("  Time remaining: %s\n", formatUsagelimitDuration(time.Until(state.ResetAt)))
 	fmt.Printf("  Recorded at:   %s\n", state.RecordedAt.Local().Format(time.RFC1123))
 	fmt.Printf("  Recorded by:   %s\n", state.RecordedBy)
 	if state.Reason != "" {
@@ -231,45 +231,45 @@ func runRatelimitStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runRatelimitClear(cmd *cobra.Command, args []string) error {
+func runUsagelimitClear(cmd *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("getting town root: %w", err)
 	}
 
-	if err := ratelimit.Clear(townRoot); err != nil {
-		return fmt.Errorf("clearing rate limit state: %w", err)
+	if err := usagelimit.Clear(townRoot); err != nil {
+		return fmt.Errorf("clearing usage limit state: %w", err)
 	}
 
-	fmt.Printf("%s Rate limit state cleared\n", style.Success.Render("✓"))
+	fmt.Printf("%s Usage limit state cleared\n", style.Success.Render("✓"))
 	return nil
 }
 
-func runRatelimitSet(cmd *cobra.Command, args []string) error {
+func runUsagelimitSet(cmd *cobra.Command, args []string) error {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("getting town root: %w", err)
 	}
 
-	resetDuration := time.Duration(ratelimitMinutes) * time.Minute
+	resetDuration := time.Duration(usagelimitMinutes) * time.Minute
 	recordedBy := os.Getenv("BD_ACTOR")
 	if recordedBy == "" {
 		recordedBy = "manual"
 	}
 
-	if err := ratelimit.RecordRateLimit(townRoot, resetDuration, recordedBy, ratelimitReason); err != nil {
-		return fmt.Errorf("setting rate limit: %w", err)
+	if err := usagelimit.RecordUsageLimit(townRoot, resetDuration, recordedBy, usagelimitReason); err != nil {
+		return fmt.Errorf("setting usage limit: %w", err)
 	}
 
-	fmt.Printf("%s Rate limit set\n", style.Success.Render("✓"))
-	fmt.Printf("  Resets in: %d minutes\n", ratelimitMinutes)
-	fmt.Printf("  Reason: %s\n", ratelimitReason)
+	fmt.Printf("%s Usage limit set\n", style.Success.Render("✓"))
+	fmt.Printf("  Resets in: %d minutes\n", usagelimitMinutes)
+	fmt.Printf("  Reason: %s\n", usagelimitReason)
 
 	return nil
 }
 
-// detectRateLimit parses transcript content for rate limit indicators.
-// Returns (isRateLimited, resetDuration, reason).
+// detectUsageLimit parses transcript content for usage limit indicators.
+// Returns (isLimited, resetDuration, reason).
 //
 // Detection patterns are based on:
 // - Anthropic API error format: {"type": "error", "error": {"type": "rate_limit_error", ...}}
@@ -279,13 +279,13 @@ func runRatelimitSet(cmd *cobra.Command, args []string) error {
 //
 // Reference: https://platform.claude.com/docs/en/api/errors
 // Reference: https://platform.claude.com/docs/en/api/rate-limits
-func detectRateLimit(transcript string) (bool, time.Duration, string) {
+func detectUsageLimit(transcript string) (bool, time.Duration, string) {
 	// Convert to lowercase for case-insensitive matching
 	lower := strings.ToLower(transcript)
 
-	// Check for rate limit patterns, ordered by specificity
+	// Check for usage limit patterns, ordered by specificity
 	// Official API patterns first, then user-facing messages
-	rateLimitPatterns := []struct {
+	usageLimitPatterns := []struct {
 		pattern string
 		reason  string
 	}{
@@ -319,7 +319,7 @@ func detectRateLimit(transcript string) (bool, time.Duration, string) {
 
 	var found bool
 	var reason string
-	for _, p := range rateLimitPatterns {
+	for _, p := range usageLimitPatterns {
 		if strings.Contains(lower, p.pattern) {
 			found = true
 			reason = p.reason
@@ -500,7 +500,7 @@ func readTranscript(workDir string) (string, error) {
 	return content.String(), nil
 }
 
-func formatRatelimitDuration(d time.Duration) string {
+func formatUsagelimitDuration(d time.Duration) string {
 	if d < 0 {
 		return "expired"
 	}

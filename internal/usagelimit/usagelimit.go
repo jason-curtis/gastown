@@ -1,12 +1,12 @@
-// Package ratelimit provides rate limit state management for Claude Pro/Max subscriptions.
+// Package usagelimit provides usage limit state management for Claude Pro/Max subscriptions.
 //
-// When Claude Code sessions hit API rate limits, they stop processing. This package
-// provides a mechanism to record when rate limits are hit, when they reset, and allows
-// the daemon to automatically wake agents when the rate limit period ends.
+// When Claude Code sessions hit API usage limits, they stop processing. This package
+// provides a mechanism to record when usage limits are hit, when they reset, and allows
+// the daemon to automatically wake agents when the usage limit period ends.
 //
-// Rate limit state is stored in <townRoot>/.runtime/ratelimit/state.json and is
+// Usage limit state is stored in <townRoot>/.runtime/usagelimit/state.json and is
 // checked by the daemon on each heartbeat cycle.
-package ratelimit
+package usagelimit
 
 import (
 	"encoding/json"
@@ -15,45 +15,45 @@ import (
 	"time"
 )
 
-// State represents the current rate limit state.
-// When a rate limit is active, ResetAt indicates when it should clear.
+// State represents the current usage limit state.
+// When a usage limit is active, ResetAt indicates when it should clear.
 type State struct {
-	// Active is true if a rate limit is currently in effect.
+	// Active is true if a usage limit is currently in effect.
 	Active bool `json:"active"`
 
-	// ResetAt is when the rate limit is expected to reset.
+	// ResetAt is when the usage limit is expected to reset.
 	// The daemon will attempt to wake agents after this time.
 	ResetAt time.Time `json:"reset_at"`
 
-	// RecordedAt is when this rate limit was recorded.
+	// RecordedAt is when this usage limit was recorded.
 	RecordedAt time.Time `json:"recorded_at"`
 
-	// RecordedBy identifies who/what recorded the rate limit.
+	// RecordedBy identifies who/what recorded the usage limit.
 	// Could be "claude", "deacon", "polecat/name", etc.
 	RecordedBy string `json:"recorded_by,omitempty"`
 
-	// Reason provides additional context about the rate limit.
-	// e.g., "API rate limit exceeded", "Claude Pro limit reached"
+	// Reason provides additional context about the usage limit.
+	// e.g., "API usage limit exceeded", "Claude Pro limit reached"
 	Reason string `json:"reason,omitempty"`
 
 	// RetryAfterSeconds is the original retry-after value from the API.
 	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 
 	// WakeAttempts tracks how many times we've tried to wake after reset.
-	// Used to prevent infinite wake loops if rate limit persists.
+	// Used to prevent infinite wake loops if usage limit persists.
 	WakeAttempts int `json:"wake_attempts,omitempty"`
 
 	// LastWakeAttempt is when we last tried to wake agents.
 	LastWakeAttempt time.Time `json:"last_wake_attempt,omitempty"`
 }
 
-// GetStateFile returns the path to the rate limit state file.
+// GetStateFile returns the path to the usage limit state file.
 func GetStateFile(townRoot string) string {
-	return filepath.Join(townRoot, ".runtime", "ratelimit", "state.json")
+	return filepath.Join(townRoot, ".runtime", "usagelimit", "state.json")
 }
 
-// GetState reads the current rate limit state.
-// Returns nil if no state file exists (no active rate limit).
+// GetState reads the current usage limit state.
+// Returns nil if no state file exists (no active usage limit).
 func GetState(townRoot string) (*State, error) {
 	stateFile := GetStateFile(townRoot)
 
@@ -73,7 +73,7 @@ func GetState(townRoot string) (*State, error) {
 	return &state, nil
 }
 
-// SaveState writes the rate limit state to disk.
+// SaveState writes the usage limit state to disk.
 func SaveState(townRoot string, state *State) error {
 	stateFile := GetStateFile(townRoot)
 
@@ -90,11 +90,11 @@ func SaveState(townRoot string, state *State) error {
 	return os.WriteFile(stateFile, data, 0600)
 }
 
-// RecordRateLimit records that a rate limit has been hit.
-// resetAfter is the duration until the rate limit resets (from Retry-After header).
+// RecordUsageLimit records that a usage limit has been hit.
+// resetAfter is the duration until the usage limit resets (from Retry-After header).
 // recordedBy identifies who recorded this (e.g., "deacon", "gastown/Toast").
-// reason provides additional context about the rate limit.
-func RecordRateLimit(townRoot string, resetAfter time.Duration, recordedBy, reason string) error {
+// reason provides additional context about the usage limit.
+func RecordUsageLimit(townRoot string, resetAfter time.Duration, recordedBy, reason string) error {
 	now := time.Now().UTC()
 	state := &State{
 		Active:            true,
@@ -108,8 +108,8 @@ func RecordRateLimit(townRoot string, resetAfter time.Duration, recordedBy, reas
 	return SaveState(townRoot, state)
 }
 
-// Clear removes the rate limit state file.
-// Called when the rate limit has reset and agents have been woken.
+// Clear removes the usage limit state file.
+// Called when the usage limit has reset and agents have been woken.
 func Clear(townRoot string) error {
 	stateFile := GetStateFile(townRoot)
 
@@ -121,10 +121,10 @@ func Clear(townRoot string) error {
 	return nil
 }
 
-// IsRateLimited checks if a rate limit is currently active.
+// IsLimited checks if a usage limit is currently active.
 // Returns (isLimited, state, error).
-// If rate limit has expired (current time > ResetAt), returns false.
-func IsRateLimited(townRoot string) (bool, *State, error) {
+// If usage limit has expired (current time > ResetAt), returns false.
+func IsLimited(townRoot string) (bool, *State, error) {
 	state, err := GetState(townRoot)
 	if err != nil {
 		return false, nil, err
@@ -134,7 +134,7 @@ func IsRateLimited(townRoot string) (bool, *State, error) {
 		return false, nil, nil
 	}
 
-	// Check if rate limit has expired
+	// Check if usage limit has expired
 	if time.Now().After(state.ResetAt) {
 		return false, state, nil // Expired but state still exists for reference
 	}
@@ -142,9 +142,9 @@ func IsRateLimited(townRoot string) (bool, *State, error) {
 	return true, state, nil
 }
 
-// ShouldWake checks if it's time to wake agents after a rate limit.
+// ShouldWake checks if it's time to wake agents after a usage limit.
 // Returns true if:
-// 1. A rate limit state exists
+// 1. A usage limit state exists
 // 2. The reset time has passed
 // 3. We haven't exceeded max wake attempts
 //
@@ -161,7 +161,7 @@ func ShouldWake(townRoot string) (bool, *State, error) {
 
 	now := time.Now()
 
-	// Rate limit hasn't reset yet
+	// Usage limit hasn't reset yet
 	if now.Before(state.ResetAt) {
 		return false, state, nil
 	}
@@ -183,7 +183,7 @@ func ShouldWake(townRoot string) (bool, *State, error) {
 }
 
 // RecordWakeAttempt updates the state to reflect a wake attempt.
-// Called by the daemon when it tries to wake agents after rate limit reset.
+// Called by the daemon when it tries to wake agents after usage limit reset.
 func RecordWakeAttempt(townRoot string) error {
 	state, err := GetState(townRoot)
 	if err != nil {
@@ -200,8 +200,8 @@ func RecordWakeAttempt(townRoot string) error {
 	return SaveState(townRoot, state)
 }
 
-// TimeUntilReset returns the duration until the rate limit resets.
-// Returns 0 if no active rate limit or if already past reset time.
+// TimeUntilReset returns the duration until the usage limit resets.
+// Returns 0 if no active usage limit or if already past reset time.
 func TimeUntilReset(townRoot string) (time.Duration, error) {
 	state, err := GetState(townRoot)
 	if err != nil {

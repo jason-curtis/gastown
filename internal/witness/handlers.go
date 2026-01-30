@@ -33,15 +33,19 @@ type HandlerResult struct {
 // HandlePolecatDone processes a POLECAT_DONE message from a polecat.
 // For ESCALATED/DEFERRED exits (no pending MR), auto-nukes if clean.
 // For PHASE_COMPLETE exits, recycles the polecat (session ends, worktree kept).
-// For COMPLETED exits with MR and clean state, auto-nukes immediately (ephemeral model).
+// For COMPLETED exits with MR and clean state, sends MERGE_READY to Refinery, then auto-nukes.
 // For exits with pending MR but dirty state, creates cleanup wisp for manual intervention.
+//
+// CRITICAL: For COMPLETED exits, this handler sends MERGE_READY mail to the Refinery
+// to notify it there's work in the merge queue. Without this notification, the Refinery
+// won't know to process the MR (bug fix: gt-kjf8).
 //
 // Ephemeral Polecat Model:
 // Polecats are truly ephemeral - done at MR submission, recyclable immediately.
 // Once the branch is pushed (cleanup_status=clean), the polecat can be nuked.
 // The MR lifecycle continues independently in the Refinery.
 // If conflicts arise, Refinery creates a NEW conflict-resolution task for a NEW polecat.
-func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResult {
+func HandlePolecatDone(workDir, rigName string, msg *mail.Message, router *mail.Router) *HandlerResult {
 	result := &HandlerResult{
 		MessageID:    msg.ID,
 		ProtocolType: ProtoPolecatDone,
@@ -80,6 +84,34 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 	// The polecat's local branch is needed for conflict resolution if merge fails.
 	// Once the MR merges (MERGED signal), HandleMerged will nuke the polecat.
 	if hasPendingMR {
+		// CRITICAL: Send MERGE_READY mail to Refinery FIRST (gt-kjf8 bug fix)
+		// This notifies the Refinery there's work in the merge queue.
+		// Without this notification, the Refinery won't know to process the MR.
+		if router != nil {
+			refineryAddr := fmt.Sprintf("%s/refinery", rigName)
+			mergeReadyMsg := &mail.Message{
+				From:    fmt.Sprintf("%s/witness", rigName),
+				To:      refineryAddr,
+				Subject: fmt.Sprintf("MERGE_READY %s", payload.PolecatName),
+				Body: fmt.Sprintf(`Branch: %s
+Issue: %s
+Polecat: %s
+MR: %s
+Verified: clean git state`,
+					payload.Branch,
+					payload.IssueID,
+					payload.PolecatName,
+					payload.MRID,
+				),
+			}
+			if err := router.Send(mergeReadyMsg); err != nil {
+				// Non-fatal - log but continue with cleanup wisp creation
+				result.Error = fmt.Errorf("sending MERGE_READY to refinery: %w (continuing with cleanup)", err)
+			} else {
+				result.MailSent = mergeReadyMsg.ID
+			}
+		}
+
 		// Create cleanup wisp to track this polecat is waiting for merge
 		wispID, err := createCleanupWisp(workDir, payload.PolecatName, payload.IssueID, payload.Branch)
 		if err != nil {
@@ -95,7 +127,7 @@ func HandlePolecatDone(workDir, rigName string, msg *mail.Message) *HandlerResul
 
 		result.Handled = true
 		result.WispCreated = wispID
-		result.Action = fmt.Sprintf("deferred cleanup for %s (pending MR=%s, local branch preserved for conflict resolution)", payload.PolecatName, payload.MRID)
+		result.Action = fmt.Sprintf("sent MERGE_READY and deferred cleanup for %s (pending MR=%s)", payload.PolecatName, payload.MRID)
 		return result
 	}
 

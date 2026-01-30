@@ -73,7 +73,7 @@ func (c *BeadsDatabaseCheck) Run(ctx *CheckContext) *CheckResult {
 					"This can cause 'table issues has no column named pinned' errors",
 					"The database needs to be rebuilt from the JSONL file",
 				},
-				FixHint: "Run 'gt doctor --fix' or delete issues.db and run 'bd import'",
+				FixHint: "Run 'gt doctor --fix' or 'bd repair' to rebuild the database",
 			}
 		}
 	}

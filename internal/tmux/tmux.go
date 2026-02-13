@@ -41,6 +41,7 @@ var (
 	ErrSessionExists       = errors.New("session already exists")
 	ErrSessionNotFound     = errors.New("session not found")
 	ErrInvalidSessionName  = errors.New("invalid session name")
+	ErrIdleTimeout         = errors.New("agent not idle before timeout")
 )
 
 // validateSessionName checks that a session name contains only safe characters.
@@ -1648,6 +1649,50 @@ func (t *Tmux) WaitForRuntimeReady(session string, rc *config.RuntimeConfig, tim
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout waiting for runtime prompt")
+}
+
+// DefaultReadyPromptPrefix is the Claude Code prompt prefix used for idle detection.
+// Claude Code uses ❯ (U+276F) as the prompt character.
+const DefaultReadyPromptPrefix = "❯ "
+
+// WaitForIdle polls until the agent appears to be at an idle prompt.
+// Unlike WaitForRuntimeReady (which is for bootstrap), this is for steady-state
+// idle detection — used to avoid interrupting agents mid-work.
+//
+// Returns nil if the agent becomes idle within the timeout.
+// Returns an error if the timeout expires while the agent is still busy.
+func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
+	promptPrefix := DefaultReadyPromptPrefix
+	prefix := strings.TrimSpace(promptPrefix)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		lines, err := t.CapturePaneLines(session, 5)
+		if err != nil {
+			// Distinguish terminal errors from transient ones.
+			// Session not found or no server means the session is gone —
+			// no point in polling further.
+			if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrNoServer) {
+				return err
+			}
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		// Scan all captured lines for the prompt prefix.
+		// Claude Code renders a status bar below the prompt line,
+		// so the prompt may not be the last non-empty line.
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if matchesPromptPrefix(trimmed, promptPrefix) || (prefix != "" && trimmed == prefix) {
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return ErrIdleTimeout
 }
 
 // GetSessionInfo returns detailed information about a session.

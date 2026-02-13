@@ -892,9 +892,13 @@ func runDeaconHealthCheck(cmd *cobra.Command, args []string) error {
 	// Record ping
 	agentState.RecordPing()
 
-	// Send health check nudge
-	if err := t.NudgeSession(sessionName, "HEALTH_CHECK: respond with any action to confirm responsiveness"); err != nil {
-		return fmt.Errorf("sending nudge: %w", err)
+	// Send health check nudge via immediate delivery (not queued).
+	// Health checks MUST interrupt to test liveness — queued delivery would
+	// defer until the next turn boundary, causing the 30s timeout to expire
+	// and producing false negatives that kill healthy agents.
+	healthMsg := "HEALTH_CHECK: respond with any action to confirm responsiveness"
+	if err := t.NudgeSession(sessionName, healthMsg); err != nil {
+		return fmt.Errorf("sending health check nudge: %w", err)
 	}
 
 	// Get baseline time AFTER sending nudge to avoid false positives.

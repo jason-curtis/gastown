@@ -442,6 +442,9 @@ func startConfiguredCrew(t *tmux.Tmux, rigs []*rig.Rig, townRoot string, mu *syn
 }
 
 // startOrRestartCrewMember starts or restarts a single crew member and returns a status message.
+// Uses IsAgentAlive for robust zombie detection (checks pane command + descendant processes),
+// and delegates zombie cleanup to crewMgr.Start() which kills the zombie session and recreates
+// it with fresh env vars and runtime settings.
 func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot string) (msg string, started bool) {
 	sessionID := crewSessionName(r.Name, crewName)
 	if running, _ := t.HasSession(sessionID); running {
@@ -463,7 +466,8 @@ func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot strin
 			}
 			return fmt.Sprintf("  %s %s/%s agent restarted\n", style.Bold.Render("✓"), r.Name, crewName), true
 		}
-		return fmt.Sprintf("  %s %s/%s already running\n", style.Dim.Render("○"), r.Name, crewName), false
+		// Agent is dead (zombie session) - fall through to startCrewMember
+		// which calls crewMgr.Start() to kill zombie and recreate cleanly
 	}
 
 	if err := startCrewMember(r.Name, crewName, townRoot); err != nil {

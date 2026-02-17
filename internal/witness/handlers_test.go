@@ -1169,7 +1169,7 @@ EOJSON
   show)
     case "$2" in
       gt-work-001)
-        echo '[{"status":"hooked","description":"attached_molecule: gt-mol-orphan\\nattached_at: 2026-01-15T10:00:00Z\\ndispatched_by: mayor"}]'
+        echo '[{"status":"hooked","description":"attached_molecule: gt-mol-orphan\nattached_at: 2026-01-15T10:00:00Z\ndispatched_by: mayor"}]'
         ;;
       gt-mol-orphan)
         echo '[{"status":"open"}]'

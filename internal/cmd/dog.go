@@ -418,24 +418,49 @@ func runDogList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Check session health for working dogs.
+	tm := tmux.NewTmux()
+	type dogHealth struct {
+		hasSession bool
+		agentAlive bool
+	}
+	healthMap := make(map[string]*dogHealth)
+	for _, d := range dogs {
+		if d.State == dog.StateWorking {
+			sessionName := fmt.Sprintf("hq-dog-%s", d.Name)
+			h := &dogHealth{}
+			h.hasSession, _ = tm.HasSession(sessionName)
+			if h.hasSession {
+				h.agentAlive = tm.IsAgentAlive(sessionName)
+			}
+			healthMap[d.Name] = h
+		}
+	}
+
 	if dogListJSON {
 		type DogListItem struct {
-			Name       string            `json:"name"`
-			State      dog.State         `json:"state"`
-			Work       string            `json:"work,omitempty"`
-			LastActive time.Time         `json:"last_active"`
-			Worktrees  map[string]string `json:"worktrees,omitempty"`
+			Name         string            `json:"name"`
+			State        dog.State         `json:"state"`
+			Work         string            `json:"work,omitempty"`
+			LastActive   time.Time         `json:"last_active"`
+			Worktrees    map[string]string `json:"worktrees,omitempty"`
+			SessionAlive *bool             `json:"session_alive,omitempty"`
 		}
 
 		var items []DogListItem
 		for _, d := range dogs {
-			items = append(items, DogListItem{
+			item := DogListItem{
 				Name:       d.Name,
 				State:      d.State,
 				Work:       d.Work,
 				LastActive: d.LastActive,
 				Worktrees:  d.Worktrees,
-			})
+			}
+			if h, ok := healthMap[d.Name]; ok {
+				alive := h.agentAlive
+				item.SessionAlive = &alive
+			}
+			items = append(items, item)
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -449,6 +474,7 @@ func runDogList(cmd *cobra.Command, args []string) error {
 
 	idleCount := 0
 	workingCount := 0
+	zombieCount := 0
 
 	for _, d := range dogs {
 		stateIcon := "○"
@@ -465,11 +491,20 @@ func runDogList(cmd *cobra.Command, args []string) error {
 		if d.Work != "" {
 			line += fmt.Sprintf(" → %s", style.Dim.Render(d.Work))
 		}
+		// Flag zombies: working state but agent session is dead
+		if h, ok := healthMap[d.Name]; ok && !h.agentAlive {
+			line += fmt.Sprintf(" %s", style.Bold.Render("[ZOMBIE]"))
+			zombieCount++
+		}
 		fmt.Println(line)
 	}
 
 	fmt.Println()
-	fmt.Printf("  %d idle, %d working\n", idleCount, workingCount)
+	summary := fmt.Sprintf("  %d idle, %d working", idleCount, workingCount)
+	if zombieCount > 0 {
+		summary += fmt.Sprintf(", %d zombie (use 'gt dog clear <name>' to fix)", zombieCount)
+	}
+	fmt.Println(summary)
 
 	return nil
 }
@@ -566,12 +601,25 @@ func runDogClear(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Check for live tmux session
-	if !dogForce {
-		sessionName := fmt.Sprintf("hq-dog-%s", name)
-		tm := tmux.NewTmux()
-		if has, _ := tm.HasSession(sessionName); has {
-			return fmt.Errorf("dog %s has an active session (%s)\nUse --force to clear anyway", name, sessionName)
+	sessionName := fmt.Sprintf("hq-dog-%s", name)
+	tm := tmux.NewTmux()
+	hasSession, _ := tm.HasSession(sessionName)
+
+	if hasSession && !dogForce {
+		// Session exists — check if the agent process is actually alive.
+		// A zombie session (remain-on-exit keeps tmux alive after agent dies)
+		// should not block clearing the dog state.
+		if tm.IsAgentAlive(sessionName) {
+			return fmt.Errorf("dog %s has a live agent session (%s)\nUse --force to clear anyway", name, sessionName)
+		}
+		// Zombie detected: session exists but agent is dead.
+		fmt.Printf("  Zombie detected: session %s exists but agent is dead\n", sessionName)
+	}
+
+	// Kill the tmux session if it exists (zombie cleanup or force mode).
+	if hasSession {
+		if err := tm.KillSessionWithProcesses(sessionName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to kill session %s: %v\n", sessionName, err)
 		}
 	}
 
@@ -697,11 +745,17 @@ func showDogStatus(mgr *dog.Manager, name string) error {
 		}
 	}
 
-	// Check for tmux session
+	// Check for tmux session and agent health
 	sessionName := fmt.Sprintf("hq-dog-%s", name)
 	tm := tmux.NewTmux()
 	if has, _ := tm.HasSession(sessionName); has {
-		fmt.Printf("\nSession: %s (running)\n", sessionName)
+		if tm.IsAgentAlive(sessionName) {
+			fmt.Printf("\nSession: %s (agent alive)\n", sessionName)
+		} else {
+			fmt.Printf("\nSession: %s (ZOMBIE - agent dead, use 'gt dog clear %s')\n", sessionName, name)
+		}
+	} else if d.State == dog.StateWorking {
+		fmt.Printf("\nSession: (none - state is working but no session exists, use 'gt dog clear %s')\n", name)
 	}
 
 	return nil

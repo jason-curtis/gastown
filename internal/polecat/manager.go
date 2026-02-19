@@ -1366,15 +1366,23 @@ func (m *Manager) ReconcilePoolWith(namesWithDirs, namesWithSessions []string) {
 }
 
 // isSessionProcessDead checks if a tmux session's pane process has exited.
-// Returns true if the process is dead or cannot be checked (conservative: allows cleanup).
+// Returns true only when we can confirm the process is dead, not on transient
+// tmux query failures (gt-kncti: permission denied false positives).
 func isSessionProcessDead(t *tmux.Tmux, sessionName string) bool {
 	pidStr, err := t.GetPanePID(sessionName)
-	if err != nil || pidStr == "" {
+	if err != nil {
+		// Tmux query failed — could be permission denied, server busy, etc.
+		// Don't assume dead; let a future cycle retry.
+		return false
+	}
+	if pidStr == "" {
+		// No PID means no process — session is dead.
 		return true
 	}
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
-		return true
+		// Got a non-numeric PID — shouldn't happen, but don't kill.
+		return false
 	}
 	p, err := os.FindProcess(pid)
 	if err != nil {

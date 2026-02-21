@@ -96,6 +96,10 @@ func runMoleculeBurn(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("detaching molecule: %w", err)
 	}
+	// Close the molecule root after detach so the audit sees original status
+	if closeErr := b.ForceCloseWithReason("burned", moleculeID); closeErr != nil {
+		style.PrintWarning("could not close molecule root %s: %v", moleculeID, closeErr)
+	}
 
 	if moleculeJSON {
 		result := map[string]interface{}{
@@ -295,6 +299,11 @@ squashed_at: %s
 	})
 	if err != nil {
 		return fmt.Errorf("detaching molecule: %w", err)
+	}
+
+	// Close the molecule root after detach so the audit sees original status
+	if closeErr := b.ForceCloseWithReason("squashed", moleculeID); closeErr != nil {
+		style.PrintWarning("could not close molecule root %s: %v", moleculeID, closeErr)
 	}
 
 	if moleculeJSON {

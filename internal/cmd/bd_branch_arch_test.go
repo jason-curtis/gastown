@@ -446,6 +446,7 @@ var expectedBeadsNewCounts = map[string]int{
 	"polecat_identity.go":          6,
 	"polecat_spawn.go":             2,
 	"prime.go":                     3,
+	"patrol_helpers.go":            1,
 	"prime_molecule.go":            1,
 	"prime_output.go":              2,
 	"prime_session.go":             3,
@@ -508,7 +509,7 @@ var expectedExecBdCounts = map[string]int{
 	"molecule_await_signal.go": 4,
 	"molecule_step.go":         3,
 	"patrol.go":                5,
-	"patrol_helpers.go":        2,
+	"patrol_helpers.go":        0, // Migrated to BdCmd
 	"polecat.go":               1,
 	"polecat_identity.go":      1,
 	"prime.go":                 3,

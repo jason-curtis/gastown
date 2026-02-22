@@ -27,6 +27,16 @@ import (
 // tmux output (tool calls, status updates). 30 minutes of silence is abnormal.
 const HungSessionThresholdMinutes = 30
 
+// SpawnGracePeriod is the time window after a polecat enters "spawning" state
+// during which the witness will NOT treat it as a zombie, even if its tmux
+// session appears dead or the agent process isn't alive yet.
+// This prevents a race condition (gt-es39) where the witness patrol fires
+// during the spawn window and nukes polecats before they finish starting up.
+// The daemon has a separate 5-minute guard; this shorter witness-side guard
+// prevents the rapid spawn-nuke loop that occurs when witness patrols are
+// faster than polecat startup time.
+const SpawnGracePeriod = 2 * time.Minute
+
 // initRegistryFromWorkDir initializes the session prefix and agent registries
 // from a work directory. This ensures session.PrefixFor(rigName) returns the
 // correct rig prefix (e.g., "tr" for testrig) instead of the default "gt",
@@ -1025,8 +1035,14 @@ func DetectZombiePolecats(workDir, rigName string, router *mail.Router) *DetectZ
 			// status.go detects but DetectZombiePolecats previously missed.
 			// See: gt-kj6r6
 			if !t.IsAgentAlive(sessionName) {
-				// Read hook bead before nuke (nuke may clean up agent bead)
-				_, deadAgentHookBead := getAgentBeadState(workDir, agentBeadID)
+				// Spawn grace period (gt-es39): during spawn, the tmux session
+				// exists but Claude hasn't started yet. Don't nuke polecats
+				// that are still within the spawn window.
+				deadAgentState, deadAgentHookBead, deadAgentUpdatedAt := getAgentBeadStateWithTime(workDir, agentBeadID)
+				if deadAgentState == "spawning" && !deadAgentUpdatedAt.IsZero() && time.Since(deadAgentUpdatedAt) < SpawnGracePeriod {
+					continue // Still spawning, give it time
+				}
+				_ = deadAgentState // used above
 				zombie := ZombieResult{
 					PolecatName: polecatName,
 					AgentState:  "agent-dead-in-session",
@@ -1175,8 +1191,16 @@ func detectZombieDeadSession(workDir, rigName, polecatName, agentBeadID, session
 	}
 
 	// Standard zombie detection: active state or hooked bead with dead session.
-	agentState, hookBead := getAgentBeadState(workDir, agentBeadID)
+	agentState, hookBead, updatedAt := getAgentBeadStateWithTime(workDir, agentBeadID)
 	if !isZombieState(agentState, hookBead) {
+		return ZombieResult{}, false
+	}
+
+	// Spawn grace period (gt-es39): don't nuke polecats still within the spawn
+	// window. They may have a dead session because tmux hasn't fully started yet,
+	// or Claude is still loading. Wait for the grace period to expire before
+	// treating as a zombie.
+	if agentState == "spawning" && !updatedAt.IsZero() && time.Since(updatedAt) < SpawnGracePeriod {
 		return ZombieResult{}, false
 	}
 
@@ -1353,21 +1377,34 @@ func DetectStalledPolecats(workDir, rigName string) *DetectStalledPolecatsResult
 // getAgentBeadState reads agent_state and hook_bead from an agent bead.
 // Returns the agent_state string and hook_bead ID.
 func getAgentBeadState(workDir, agentBeadID string) (agentState, hookBead string) {
+	state, hook, _ := getAgentBeadStateWithTime(workDir, agentBeadID)
+	return state, hook
+}
+
+// getAgentBeadStateWithTime reads agent_state, hook_bead, and updated_at from an agent bead.
+// The returned time is zero-value if parsing fails.
+func getAgentBeadStateWithTime(workDir, agentBeadID string) (agentState, hookBead string, updatedAt time.Time) {
 	output, err := util.ExecWithOutput(workDir, "bd", "show", agentBeadID, "--json")
 	if err != nil || output == "" {
-		return "", ""
+		return "", "", time.Time{}
 	}
 
 	// Parse JSON response — bd show --json returns an array
 	var issues []struct {
 		AgentState string `json:"agent_state"`
 		HookBead   string `json:"hook_bead"`
+		UpdatedAt  string `json:"updated_at"`
 	}
 	if err := json.Unmarshal([]byte(output), &issues); err != nil || len(issues) == 0 {
-		return "", ""
+		return "", "", time.Time{}
 	}
 
-	return issues[0].AgentState, issues[0].HookBead
+	var t time.Time
+	if issues[0].UpdatedAt != "" {
+		t, _ = time.Parse(time.RFC3339, issues[0].UpdatedAt)
+	}
+
+	return issues[0].AgentState, issues[0].HookBead, t
 }
 
 // getBeadStatus returns the status of a bead (e.g., "open", "closed", "hooked").

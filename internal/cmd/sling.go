@@ -235,6 +235,10 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	}
 	townBeadsDir := filepath.Join(townRoot, ".beads")
 
+	// Demand-driven Dolt: if the system was idle and Dolt was stopped,
+	// auto-start it before any bd commands that depend on it.
+	ensureDoltForSling(townRoot)
+
 	// Normalize target arguments: trim trailing slashes from target to handle tab-completion
 	// artifacts like "gt sling sl-123 slingshot/" → "gt sling sl-123 slingshot"
 	// This makes sling more forgiving without breaking existing functionality.

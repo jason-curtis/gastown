@@ -76,6 +76,13 @@ type Daemon struct {
 	// Restart tracking with exponential backoff to prevent crash loops
 	restartTracker *RestartTracker
 
+	// Idle tracking: when the system has no active polecats or convoys,
+	// we can stop Dolt and slow down deacon patrols.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	idleSince       time.Time // When the system became idle (zero = not idle)
+	doltIdleStopped bool      // Dolt was intentionally stopped due to idle
+	idleBackoff     time.Duration
+
 	// telemetry exports metrics and logs to VictoriaMetrics / VictoriaLogs.
 	// Nil when telemetry is disabled (GT_OTEL_METRICS_URL / GT_OTEL_LOGS_URL not set).
 	otelProvider *telemetry.Provider
@@ -401,6 +408,11 @@ func (d *Daemon) heartbeat(state *State) {
 	// This must happen before beads operations that depend on Dolt.
 	d.ensureDoltServerRunning()
 
+	// 0.5. Check idle state and manage Dolt lifecycle accordingly.
+	// When no polecats or convoys are active, stop Dolt to save CPU.
+	// When work arrives (via wake signal from sling), restart Dolt.
+	d.manageIdleState()
+
 	// 1. Ensure Deacon is running (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
 	if IsPatrolEnabled(d.patrolConfig, "deacon") {
@@ -498,9 +510,16 @@ func (d *Daemon) heartbeat(state *State) {
 }
 
 // ensureDoltServerRunning ensures the Dolt SQL server is running if configured.
+// Skips if the system is idle and Dolt was intentionally stopped.
 // This provides the backend for beads database access in server mode.
 func (d *Daemon) ensureDoltServerRunning() {
 	if d.doltServer == nil || !d.doltServer.IsEnabled() {
+		return
+	}
+
+	// Skip if we intentionally stopped Dolt due to idle state.
+	// Sling auto-start will bring it back when work arrives.
+	if d.doltIdleStopped {
 		return
 	}
 
@@ -518,6 +537,89 @@ func (d *Daemon) ensureDoltServerRunning() {
 			h.DiskUsageBytes,
 			h.Healthy,
 		)
+	}
+}
+
+// manageIdleState checks whether the system is idle (no polecats, no convoys)
+// and manages Dolt lifecycle and deacon backoff accordingly.
+//
+// When idle for longer than the grace period, Dolt is stopped to save CPU.
+// When a wake signal arrives (from sling), Dolt is restarted and backoff resets.
+func (d *Daemon) manageIdleState() {
+	// Check for wake signal from sling (higher priority than idle detection).
+	if ConsumeWakeSignal(d.config.TownRoot) {
+		if d.doltIdleStopped {
+			d.logger.Printf("Wake signal received, restarting Dolt from idle state")
+			d.doltIdleStopped = false
+			d.idleSince = time.Time{}
+			d.idleBackoff = 0
+			d.ensureDoltServerRunning()
+		}
+		d.writeIdleState(false, 0, 0)
+		return
+	}
+
+	polecats := countActivePolecatSessions()
+	convoys := countOpenConvoys(d.config.TownRoot)
+	systemIdle := polecats == 0 && convoys == 0
+
+	if !systemIdle {
+		// System is active — reset idle tracking.
+		if !d.idleSince.IsZero() {
+			d.logger.Printf("System active (polecats=%d, convoys=%d), clearing idle state", polecats, convoys)
+		}
+		d.idleSince = time.Time{}
+		d.idleBackoff = 0
+		if d.doltIdleStopped {
+			d.logger.Printf("System active but Dolt idle-stopped, restarting")
+			d.doltIdleStopped = false
+			d.ensureDoltServerRunning()
+		}
+		d.writeIdleState(false, polecats, convoys)
+		return
+	}
+
+	// System is idle.
+	now := time.Now()
+	if d.idleSince.IsZero() {
+		d.idleSince = now
+		d.logger.Printf("System idle (polecats=0, convoys=0), starting grace period")
+	}
+
+	idleDuration := now.Sub(d.idleSince)
+
+	// Advance deacon backoff.
+	d.idleBackoff = nextBackoffInterval(d.idleBackoff)
+
+	// Stop Dolt after grace period.
+	if !d.doltIdleStopped && idleDuration >= DefaultIdleGracePeriod {
+		if d.doltServer != nil && d.doltServer.IsEnabled() && !d.doltServer.IsExternal() {
+			d.logger.Printf("System idle for %s, stopping Dolt to save CPU", idleDuration.Round(time.Second))
+			if err := d.doltServer.Stop(); err != nil {
+				d.logger.Printf("Error stopping Dolt for idle: %v", err)
+			} else {
+				d.doltIdleStopped = true
+			}
+		}
+	}
+
+	d.writeIdleState(true, polecats, convoys)
+}
+
+// writeIdleState writes the current idle state for other processes to read.
+func (d *Daemon) writeIdleState(idle bool, polecats, convoys int) {
+	state := &IdleState{
+		Idle:            idle,
+		PolecatCount:    polecats,
+		ConvoyCount:     convoys,
+		DoltStopped:     d.doltIdleStopped,
+		BackoffInterval: d.idleBackoff,
+	}
+	if idle && !d.idleSince.IsZero() {
+		state.Since = d.idleSince
+	}
+	if err := WriteIdleState(d.config.TownRoot, state); err != nil {
+		d.logger.Printf("Warning: failed to write idle state: %v", err)
 	}
 }
 

@@ -538,6 +538,16 @@ func runDoltStatus(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  Clean up with: %s\n", style.Dim.Render("gt dolt cleanup"))
 		}
 
+		// Show parked databases
+		parkedDBs, _ := doltserver.ListParkedDatabases(townRoot)
+		if len(parkedDBs) > 0 {
+			fmt.Printf("\n  %s %d parked database(s) (unloaded):\n",
+				style.Dim.Render("P"), len(parkedDBs))
+			for _, db := range parkedDBs {
+				fmt.Printf("    - %s\n", style.Dim.Render(db))
+			}
+		}
+
 		if len(metrics.Warnings) > 0 {
 			fmt.Printf("\n  %s\n", style.Bold.Render("Warnings:"))
 			for _, w := range metrics.Warnings {
@@ -562,6 +572,17 @@ func runDoltStatus(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  - %s\n", db)
 			}
 			fmt.Printf("\nStart with: %s\n", style.Dim.Render("gt dolt start"))
+		}
+
+		// Show parked databases
+		parkedDBs, _ := doltserver.ListParkedDatabases(townRoot)
+		if len(parkedDBs) > 0 {
+			fmt.Printf("\n%s %d parked database(s):\n",
+				style.Dim.Render("P"), len(parkedDBs))
+			for _, db := range parkedDBs {
+				fmt.Printf("  - %s %s\n", db, style.Dim.Render("(parked)"))
+			}
+			fmt.Printf("Unpark with: %s\n", style.Dim.Render("gt rig unpark <rig>"))
 		}
 	}
 

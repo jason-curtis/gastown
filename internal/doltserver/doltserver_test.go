@@ -3623,3 +3623,204 @@ func TestWaitForReady_ServerBecomesReady(t *testing.T) {
 		t.Errorf("WaitForReady took too long (%v), should succeed shortly after server starts", elapsed)
 	}
 }
+
+// =============================================================================
+// Park/Unpark database tests
+// =============================================================================
+
+func TestParkDatabase_MovesDbToParkedDir(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(filepath.Join(dataDir, "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// ParkDatabase will try to restart Dolt (which won't be running), that's fine
+	err := ParkDatabase(townRoot, "myrig")
+	if err != nil {
+		t.Fatalf("ParkDatabase failed: %v", err)
+	}
+
+	// Database should be gone from data dir
+	if _, err := os.Stat(filepath.Join(dataDir, "myrig")); !os.IsNotExist(err) {
+		t.Error("database should be removed from data dir after parking")
+	}
+
+	// Database should be in parked dir
+	parkedPath := filepath.Join(dataDir, ".parked", "myrig", ".dolt")
+	if _, err := os.Stat(parkedPath); err != nil {
+		t.Errorf("database should exist in parked dir: %v", err)
+	}
+}
+
+func TestParkDatabase_NoDbIsNoop(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, ".dolt-data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ParkDatabase(townRoot, "nonexistent")
+	if err != nil {
+		t.Fatalf("ParkDatabase with no db should be noop, got: %v", err)
+	}
+}
+
+func TestParkDatabase_AlreadyParkedErrors(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	// Create both active and parked versions
+	if err := os.MkdirAll(filepath.Join(dataDir, "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ParkDatabase(townRoot, "myrig")
+	if err == nil {
+		t.Fatal("ParkDatabase should error when parked dir already exists")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' error, got: %v", err)
+	}
+}
+
+func TestUnparkDatabase_MovesDbBack(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// UnparkDatabase will try to start Dolt (which will fail without dolt binary), but
+	// the file move should succeed. We expect the Start error.
+	_ = UnparkDatabase(townRoot, "myrig")
+
+	// Database should be back in data dir
+	if _, err := os.Stat(filepath.Join(dataDir, "myrig", ".dolt")); err != nil {
+		t.Errorf("database should be restored to data dir: %v", err)
+	}
+
+	// Parked dir should be cleaned up (was the only entry)
+	if _, err := os.Stat(filepath.Join(dataDir, ".parked")); !os.IsNotExist(err) {
+		t.Error("empty .parked dir should be cleaned up")
+	}
+}
+
+func TestUnparkDatabase_NoParkedDbIsNoop(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, ".dolt-data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UnparkDatabase(townRoot, "nonexistent")
+	if err != nil {
+		t.Fatalf("UnparkDatabase with no parked db should be noop, got: %v", err)
+	}
+}
+
+func TestUnparkDatabase_ActiveDbExistsErrors(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	// Create both active and parked versions
+	if err := os.MkdirAll(filepath.Join(dataDir, "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "myrig", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UnparkDatabase(townRoot, "myrig")
+	if err == nil {
+		t.Fatal("UnparkDatabase should error when active db already exists")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' error, got: %v", err)
+	}
+}
+
+func TestListParkedDatabases_Empty(t *testing.T) {
+	townRoot := t.TempDir()
+	dbs, err := ListParkedDatabases(townRoot)
+	if err != nil {
+		t.Fatalf("ListParkedDatabases failed: %v", err)
+	}
+	if len(dbs) != 0 {
+		t.Errorf("expected 0 parked databases, got %d", len(dbs))
+	}
+}
+
+func TestListParkedDatabases_FindsParked(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "rig1", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "rig2", ".dolt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Non-dolt dir should be excluded
+	if err := os.MkdirAll(filepath.Join(dataDir, ".parked", "notadb"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	dbs, err := ListParkedDatabases(townRoot)
+	if err != nil {
+		t.Fatalf("ListParkedDatabases failed: %v", err)
+	}
+	if len(dbs) != 2 {
+		t.Errorf("expected 2 parked databases, got %d: %v", len(dbs), dbs)
+	}
+}
+
+func TestParkUnpark_RoundTrip(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+
+	// Create a database with some content
+	dbDir := filepath.Join(dataDir, "testrig", ".dolt")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	markerFile := filepath.Join(dataDir, "testrig", ".dolt", "noms")
+	if err := os.WriteFile(markerFile, []byte("test-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Park
+	if err := ParkDatabase(townRoot, "testrig"); err != nil {
+		t.Fatalf("ParkDatabase failed: %v", err)
+	}
+
+	// Verify parked
+	active, _ := ListDatabases(townRoot)
+	parked, _ := ListParkedDatabases(townRoot)
+	if len(active) != 0 {
+		t.Errorf("expected 0 active databases after park, got %d", len(active))
+	}
+	if len(parked) != 1 || parked[0] != "testrig" {
+		t.Errorf("expected [testrig] parked, got %v", parked)
+	}
+
+	// Unpark (ignore Dolt start errors since dolt binary may not be available)
+	_ = UnparkDatabase(townRoot, "testrig")
+
+	// Verify restored
+	active, _ = ListDatabases(townRoot)
+	parked, _ = ListParkedDatabases(townRoot)
+	if len(active) != 1 || active[0] != "testrig" {
+		t.Errorf("expected [testrig] active after unpark, got %v", active)
+	}
+	if len(parked) != 0 {
+		t.Errorf("expected 0 parked after unpark, got %v", parked)
+	}
+
+	// Verify data survived round-trip
+	data, err := os.ReadFile(filepath.Join(dataDir, "testrig", ".dolt", "noms"))
+	if err != nil {
+		t.Fatalf("reading marker file after round-trip: %v", err)
+	}
+	if string(data) != "test-data" {
+		t.Errorf("marker file content = %q, want %q", string(data), "test-data")
+	}
+}

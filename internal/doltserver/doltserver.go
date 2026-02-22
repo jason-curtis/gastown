@@ -2614,3 +2614,136 @@ func DeletePolecatBranch(townRoot, rigDB, branchName string) {
 		style.PrintWarning("could not delete Dolt branch %s: %v", branchName, err)
 	}
 }
+
+// parkedDir returns the path to the parked databases directory.
+func parkedDir(townRoot string) string {
+	config := DefaultConfig(townRoot)
+	return filepath.Join(config.DataDir, ".parked")
+}
+
+// ParkDatabase moves a rig's database out of the Dolt data directory
+// into .dolt-data/.parked/<rig>/ so the Dolt server no longer serves it.
+// After moving, it restarts Dolt (or stops it if no databases remain).
+func ParkDatabase(townRoot, rigName string) error {
+	config := DefaultConfig(townRoot)
+	if config.IsRemote() {
+		return fmt.Errorf("cannot park databases on remote Dolt server (%s)", config.HostPort())
+	}
+
+	srcDir := filepath.Join(config.DataDir, rigName)
+	if _, err := os.Stat(filepath.Join(srcDir, ".dolt")); err != nil {
+		if os.IsNotExist(err) {
+			// No database for this rig — nothing to park
+			return nil
+		}
+		return fmt.Errorf("checking database directory: %w", err)
+	}
+
+	// Create parked directory
+	parked := parkedDir(townRoot)
+	if err := os.MkdirAll(parked, 0755); err != nil {
+		return fmt.Errorf("creating parked directory: %w", err)
+	}
+
+	dstDir := filepath.Join(parked, rigName)
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("parked database already exists at %s — manual cleanup needed", dstDir)
+	}
+
+	// Move database to parked location
+	if err := os.Rename(srcDir, dstDir); err != nil {
+		return fmt.Errorf("moving database to parked: %w", err)
+	}
+
+	// Check if any databases remain
+	remaining, _ := ListDatabases(townRoot)
+
+	running, _, _ := IsRunning(townRoot)
+	if !running {
+		return nil
+	}
+
+	if len(remaining) == 0 {
+		// No databases left — stop Dolt entirely
+		return Stop(townRoot)
+	}
+
+	// Restart Dolt so it drops the parked database
+	if err := Stop(townRoot); err != nil {
+		return fmt.Errorf("stopping Dolt for restart: %w", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	return Start(townRoot)
+}
+
+// UnparkDatabase moves a rig's database back from .dolt-data/.parked/<rig>/
+// into the Dolt data directory and restarts (or starts) Dolt so it serves the database.
+func UnparkDatabase(townRoot, rigName string) error {
+	config := DefaultConfig(townRoot)
+	if config.IsRemote() {
+		return fmt.Errorf("cannot unpark databases on remote Dolt server (%s)", config.HostPort())
+	}
+
+	parked := parkedDir(townRoot)
+	srcDir := filepath.Join(parked, rigName)
+	if _, err := os.Stat(filepath.Join(srcDir, ".dolt")); err != nil {
+		if os.IsNotExist(err) {
+			// No parked database for this rig — nothing to unpark
+			return nil
+		}
+		return fmt.Errorf("checking parked database: %w", err)
+	}
+
+	dstDir := filepath.Join(config.DataDir, rigName)
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("database already exists at %s — manual cleanup needed", dstDir)
+	}
+
+	// Move database back to data directory
+	if err := os.Rename(srcDir, dstDir); err != nil {
+		return fmt.Errorf("moving database from parked: %w", err)
+	}
+
+	// Clean up empty .parked directory
+	entries, _ := os.ReadDir(parked)
+	if len(entries) == 0 {
+		_ = os.Remove(parked)
+	}
+
+	// Start or restart Dolt
+	running, _, _ := IsRunning(townRoot)
+	if !running {
+		return Start(townRoot)
+	}
+
+	// Restart so it picks up the restored database
+	if err := Stop(townRoot); err != nil {
+		return fmt.Errorf("stopping Dolt for restart: %w", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	return Start(townRoot)
+}
+
+// ListParkedDatabases returns the list of databases that have been parked.
+func ListParkedDatabases(townRoot string) ([]string, error) {
+	parked := parkedDir(townRoot)
+	entries, err := os.ReadDir(parked)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var databases []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		doltDir := filepath.Join(parked, entry.Name(), ".dolt")
+		if _, err := os.Stat(doltDir); err == nil {
+			databases = append(databases, entry.Name())
+		}
+	}
+	return databases, nil
+}

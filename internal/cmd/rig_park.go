@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -26,6 +27,8 @@ var rigParkCmd = &cobra.Command{
 Parking a rig:
   - Stops the witness if running
   - Stops the refinery if running
+  - Unloads the rig's Dolt database (moves to .dolt-data/.parked/)
+  - Restarts/stops Dolt server to release resources
   - Sets status=parked in the wisp layer (local/ephemeral)
   - The daemon respects this status and won't auto-restart agents
 
@@ -48,6 +51,8 @@ var rigUnparkCmd = &cobra.Command{
 
 Unparking a rig:
   - Removes the parked status from the wisp layer
+  - Restores the rig's Dolt database (moves from .dolt-data/.parked/)
+  - Starts/restarts Dolt server to serve the database
   - Allows the daemon to auto-restart agents
   - Does NOT automatically start agents (use 'gt rig start' for that)
 
@@ -121,6 +126,14 @@ func parkOneRig(rigName string) error {
 		}
 	}
 
+	// Park the rig's Dolt database (move out of data dir, restart/stop Dolt)
+	fmt.Printf("  Parking Dolt database...\n")
+	if err := doltserver.ParkDatabase(townRoot, rigName); err != nil {
+		fmt.Printf("  %s Failed to park Dolt database: %v\n", style.Warning.Render("!"), err)
+	} else {
+		stoppedAgents = append(stoppedAgents, "Dolt database parked")
+	}
+
 	// Set parked status in wisp layer
 	wispCfg := wisp.NewConfig(townRoot, rigName)
 	if err := wispCfg.Set(RigStatusKey, RigStatusParked); err != nil {
@@ -167,6 +180,14 @@ func unparkOneRig(rigName string) error {
 	wispCfg := wisp.NewConfig(townRoot, rigName)
 	if err := wispCfg.Unset(RigStatusKey); err != nil {
 		return fmt.Errorf("clearing parked status: %w", err)
+	}
+
+	// Unpark the rig's Dolt database (move back into data dir, start/restart Dolt)
+	fmt.Printf("  Restoring Dolt database...\n")
+	if err := doltserver.UnparkDatabase(townRoot, rigName); err != nil {
+		fmt.Printf("  %s Failed to unpark Dolt database: %v\n", style.Warning.Render("!"), err)
+	} else {
+		fmt.Printf("  Dolt database restored\n")
 	}
 
 	fmt.Printf("%s Rig %s unparked\n", style.Success.Render("✓"), rigName)

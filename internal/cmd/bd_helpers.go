@@ -11,12 +11,13 @@ import (
 // It provides a fluent API for configuring environment variables,
 // working directory, and I/O settings common to bd CLI invocations.
 type bdCmd struct {
-	args       []string
-	dir        string
-	env        []string
-	stderr     io.Writer
-	autoCommit bool
-	gtRoot     string
+	args         []string
+	dir          string
+	env          []string
+	stderr       io.Writer
+	autoCommit   bool
+	gtRoot       string
+	stripBdBranch bool
 }
 
 // BdCmd creates a new bd command builder with the given arguments.
@@ -50,6 +51,14 @@ func (b *bdCmd) WithGTRoot(root string) *bdCmd {
 	return b
 }
 
+// StripBdBranch removes BD_BRANCH from the environment.
+// This ensures the command operates on main/trunk, not on a polecat's isolated branch.
+// Used for operations like wisp creation and formula bonding that must happen on main.
+func (b *bdCmd) StripBdBranch() *bdCmd {
+	b.stripBdBranch = true
+	return b
+}
+
 // Dir sets the working directory for the command.
 func (b *bdCmd) Dir(dir string) *bdCmd {
 	b.dir = dir
@@ -80,6 +89,12 @@ func filterEnvKey(env []string, key string) []string {
 // buildEnv constructs the final environment slice based on configured options.
 func (b *bdCmd) buildEnv() []string {
 	env := b.env
+
+	// Strip BD_BRANCH if requested.
+	// This ensures the command operates on main/trunk, not on a polecat's isolated branch.
+	if b.stripBdBranch {
+		env = filterEnvKey(env, "BD_BRANCH")
+	}
 
 	// Add BD_DOLT_AUTO_COMMIT=on for sequential dependent calls.
 	// Filter existing entries first — glibc getenv() returns the first match,

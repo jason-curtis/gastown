@@ -1740,6 +1740,60 @@ func TestBuildStartupCommand_WorkerAgentsViaCrew(t *testing.T) {
 	})
 }
 
+func TestResolveWorkerAgentConfig_TownCrewAgents(t *testing.T) {
+	// Cannot use t.Parallel — uses t.Setenv
+	townRoot := t.TempDir()
+	rigPath := filepath.Join(townRoot, "myrig")
+
+	// Create a fake codex binary
+	binDir := t.TempDir()
+	codexPath := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write codex stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Set up town settings with crew_agents but NO rig worker_agents
+	townSettings := NewTownSettings()
+	townSettings.CrewAgents = map[string]string{"bob": "codex"}
+	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatalf("saving town settings: %v", err)
+	}
+
+	// Save rig settings without worker_agents
+	rigSettings := NewRigSettings()
+	if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings); err != nil {
+		t.Fatalf("saving rig settings: %v", err)
+	}
+
+	t.Run("town crew_agents resolves for named worker", func(t *testing.T) {
+		rc := ResolveWorkerAgentConfig("bob", townRoot, rigPath)
+		if rc.Provider != "codex" && !strings.Contains(rc.Command, "codex") {
+			t.Errorf("expected codex for crew worker bob via town crew_agents, got provider=%q command=%q", rc.Provider, rc.Command)
+		}
+	})
+
+	t.Run("worker not in town crew_agents falls through to defaults", func(t *testing.T) {
+		rc := ResolveWorkerAgentConfig("alice", townRoot, rigPath)
+		if !isClaudeCommand(rc.Command) {
+			t.Errorf("expected claude fallback for alice (not in crew_agents), got command=%q", rc.Command)
+		}
+	})
+
+	t.Run("rig worker_agents takes priority over town crew_agents", func(t *testing.T) {
+		// Add rig-level worker_agents that should override town crew_agents
+		rigSettings2 := NewRigSettings()
+		rigSettings2.WorkerAgents = map[string]string{"bob": "claude"}
+		if err := SaveRigSettings(RigSettingsPath(rigPath), rigSettings2); err != nil {
+			t.Fatalf("saving rig settings: %v", err)
+		}
+		rc := ResolveWorkerAgentConfig("bob", townRoot, rigPath)
+		if !isClaudeCommand(rc.Command) {
+			t.Errorf("expected claude for bob (rig worker_agents should override town crew_agents), got command=%q", rc.Command)
+		}
+	})
+}
+
 func TestIsClaudeAgent(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

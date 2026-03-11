@@ -67,6 +67,12 @@ type TownSettings struct {
 	// Example: {"mayor": "claude-opus", "witness": "claude-haiku", "polecat": "claude-sonnet"}
 	RoleAgents map[string]string `json:"role_agents,omitempty"`
 
+	// CrewAgents maps individual crew worker names to agent aliases at the town level.
+	// This allows town-wide per-crew agent assignment without modifying each rig's config.
+	// Resolution: --agent flag > rig WorkerAgents > town CrewAgents > role agents > defaults.
+	// Example: {"bob": "codex", "alice": "claude"}
+	CrewAgents map[string]string `json:"crew_agents,omitempty"`
+
 	// AgentEmailDomain is the domain used for agent git identity emails.
 	// Agent addresses like "gastown/crew/jack" become "gastown.crew.jack@{domain}".
 	// Default: "gastown.local"

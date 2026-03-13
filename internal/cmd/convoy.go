@@ -2147,8 +2147,22 @@ func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
 		return nil, fmt.Errorf("querying tracked issues for %s: %w", convoyID, err)
 	}
 
-	// Fallback: when dep list returns empty (common for cross-database deps),
-	// parse tracked dependencies from bd show output.
+	// Supplement: bd dep list may return partial results when some deps are
+	// cross-database (the JOIN fails for those — see GH #2624). Use direct SQL
+	// to find any deps that bd dep list missed.
+	if rawIDs, err := bdDepListRawIDs(townBeads, convoyID, "down", "tracks"); err == nil && len(rawIDs) > 0 {
+		existing := make(map[string]bool, len(trackedIDs))
+		for _, id := range trackedIDs {
+			existing[id] = true
+		}
+		for _, id := range rawIDs {
+			if !existing[id] {
+				trackedIDs = append(trackedIDs, id)
+			}
+		}
+	}
+
+	// Fallback: parse tracked dependencies from bd show output.
 	if len(trackedIDs) == 0 {
 		trackedIDs, err = bdShowTrackedDeps(townBeads, convoyID)
 		if err != nil {

@@ -27,6 +27,7 @@ func TestInferExpectedType(t *testing.T) {
 		{"ma-wisp-q1a9", "mol-witness-patrol", "molecule"},
 		{"gt-wisp-abc", "mol-deacon-patrol", "molecule"},
 		{"gt-1234", "Witness Patrol", "molecule"},
+		{"ic-wisp-xyz", "some-formula-name", "molecule"}, // wisp ID without mol- title
 
 		// Non-infra beads (should return empty)
 		{"gt-abc123", "Fix login bug", ""},

@@ -161,14 +161,16 @@ func (c *NullTypeInfraCheck) findMistypedInfraBeads(rigDir, rigName string) []nu
 
 func (c *NullTypeInfraCheck) queryTable(rigDir, rigName, table string) []nullTypeInfraRow {
 	// Query for beads with labels indicating infra type
-	// Also check ID patterns for rig beads (*-rig-*)
+	// Also check ID patterns for rig beads (*-rig-*) and molecule wisps
 	query := fmt.Sprintf(
 		"SELECT i.id, i.title, COALESCE(i.issue_type, '') as itype "+
 			"FROM `%s` i "+
 			"LEFT JOIN `%s` l ON i.id = l.issue_id "+
-			"WHERE (l.label IN ('gt:agent', 'gt:rig') "+
+			"WHERE ((l.label IN ('gt:agent', 'gt:rig') "+
 			"OR i.id LIKE '%%-rig-%%') "+
-			"AND (i.issue_type IS NULL OR i.issue_type = '' OR i.issue_type = 'task') "+
+			"AND (i.issue_type IS NULL OR i.issue_type = '' OR i.issue_type = 'task')) "+
+			"OR ((i.id LIKE '%%-wisp-%%' OR i.title LIKE 'mol-%%') "+
+			"AND (i.issue_type IS NULL OR i.issue_type = '' OR i.issue_type = 'task' OR i.issue_type = 'epic')) "+
 			"GROUP BY i.id, i.title, i.issue_type",
 		table, labelTable(table))
 
@@ -240,10 +242,11 @@ func inferExpectedType(id, title string) string {
 		return "rig"
 	}
 
-	// Molecule/patrol beads: title matches patrol patterns
+	// Molecule/patrol beads: title or ID matches molecule/wisp patterns
 	if strings.HasPrefix(title, "mol-") ||
 		strings.Contains(title, "Patrol") ||
-		strings.Contains(title, "patrol") {
+		strings.Contains(title, "patrol") ||
+		strings.Contains(id, "-wisp-") {
 		return "molecule"
 	}
 

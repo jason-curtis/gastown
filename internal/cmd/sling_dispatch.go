@@ -196,25 +196,19 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	}
 
 	// 2. Burn stale molecules (if formula applies)
+	// Auto-burn ALL existing molecules before creating a new one (gt-vonaw).
+	// If we've gotten past the status guard above, the dispatch is authorized
+	// and any existing molecules are stale — the new dispatch will create its own.
+	// Previously this required --force or heuristic staleness checks, which had
+	// edge cases that caused spawn-exit loops on re-dispatch of failed work.
 	if params.FormulaName != "" {
 		existingMolecules := collectExistingMolecules(info)
 		if len(existingMolecules) > 0 {
-			// Auto-burn when bead is unassigned (molecules are definitionally stale),
-			// or when the assigned agent's session is dead. This unblocks the daemon's
-			// stranded convoy scan which never passes --force.
-			stale := params.Force ||
-				(info.Assignee == "" && (info.Status == "open" || info.Status == "in_progress")) ||
-				(info.Assignee != "" && isHookedAgentDeadFn(info.Assignee))
-			if stale {
-				fmt.Printf("  %s Burning %d stale molecule(s): %s\n",
-					style.Warning.Render("⚠"), len(existingMolecules), strings.Join(existingMolecules, ", "))
-				if err := burnExistingMolecules(existingMolecules, params.BeadID, townRoot); err != nil {
-					result.ErrMsg = fmt.Sprintf("burn failed: %v", err)
-					return result, fmt.Errorf("burning stale molecules: %w", err)
-				}
-			} else {
-				result.ErrMsg = "has existing molecule(s)"
-				return result, fmt.Errorf("bead %s has existing molecule(s) (use --force)", params.BeadID)
+			fmt.Printf("  %s Burning %d stale molecule(s): %s\n",
+				style.Warning.Render("⚠"), len(existingMolecules), strings.Join(existingMolecules, ", "))
+			if err := burnExistingMolecules(existingMolecules, params.BeadID, townRoot); err != nil {
+				result.ErrMsg = fmt.Sprintf("burn failed: %v", err)
+				return result, fmt.Errorf("burning stale molecules: %w", err)
 			}
 		}
 	}

@@ -262,6 +262,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	d.Register(doctor.NewDoltOrphanedDatabaseCheck())
 	d.Register(doctor.NewUnregisteredBeadsDirsCheck())
 	d.Register(doctor.NewNullAssigneeCheck())
+	d.Register(doctor.NewNullTypeInfraCheck())
 
 	// Worktree gitdir validity (runs across all rigs, or specific rig with --rig)
 	d.Register(doctor.NewWorktreeGitdirCheck())

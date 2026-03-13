@@ -51,12 +51,8 @@ func setupTestGitInRigDir(t *testing.T, rigDir string) {
 	}
 }
 
-// mustNewEngineer calls NewEngineer and fails the test if it returns an error.
+// mustNewEngineer calls NewEngineer and returns the result.
 func mustNewEngineer(t *testing.T, r *rig.Rig) *Engineer {
 	t.Helper()
-	e, err := NewEngineer(r)
-	if err != nil {
-		t.Fatalf("NewEngineer: %v", err)
-	}
-	return e
+	return NewEngineer(r)
 }

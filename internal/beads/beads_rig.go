@@ -144,10 +144,14 @@ func (b *Beads) CreateRigBead(name string, fields *RigFields) (*Issue, error) {
 	id := RigBeadIDWithPrefix(prefix, name)
 	description := FormatRigDescription(name, fields)
 
+	// Ensure target database has custom types configured (rig is a custom type).
+	_ = EnsureCustomTypes(b.getResolvedBeadsDir())
+
 	args := []string{"create", "--json",
 		"--id=" + id,
 		"--title=" + name,
 		"--description=" + description,
+		"--type=rig",
 		"--labels=gt:rig",
 	}
 	if NeedsForceForID(id) {

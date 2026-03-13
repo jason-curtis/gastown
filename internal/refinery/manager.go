@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -135,12 +136,11 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	// Background mode: spawn a Claude agent in a tmux session
 	// The Claude agent handles MR processing using git commands and beads
 
-	// Working directory is the refinery worktree (shares .git with mayor/polecats)
-	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
-	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
-		// Fall back to mayor/rig (legacy architecture) - ensures we use project git, not town git.
-		// Using rig.Path directly would find town's .git with rig-named remotes instead of "origin".
-		refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
+	// Working directory must be a git repo with remotes (gt-zcj5r).
+	// Checks refinery/rig then mayor/rig, validating git + remotes at each.
+	refineryRigDir, err := ResolveRefineryGitDir(m.rig.Path)
+	if err != nil {
+		return fmt.Errorf("resolving refinery git directory: %w", err)
 	}
 
 	// Ensure runtime settings exist in the shared refinery parent directory.
@@ -579,3 +579,42 @@ func (m *Manager) notifyWorkerRejected(mr *MergeRequest, reason string) {
 
 // Town root is computed in Start() as filepath.Dir(m.rig.Path) and passed
 // through to callers — no filesystem-inference function needed (ZFC gt-qago).
+
+// ResolveRefineryGitDir determines the git working directory for refinery operations.
+// It checks candidates in order: refinery/rig, mayor/rig. For each, it verifies the
+// directory exists AND is a git repo with an "origin" remote. This prevents the refinery
+// from silently operating in a directory without remotes (gt-zcj5r).
+//
+// If no valid git directory is found, returns an error with diagnostic details.
+func ResolveRefineryGitDir(rigPath string) (string, error) {
+	candidates := []string{
+		filepath.Join(rigPath, "refinery", "rig"),
+		filepath.Join(rigPath, "mayor", "rig"),
+	}
+
+	var checked []string
+	for _, dir := range candidates {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			checked = append(checked, fmt.Sprintf("%s (not found)", dir))
+			continue
+		}
+
+		g := git.NewGit(dir)
+		if !g.IsRepo() {
+			checked = append(checked, fmt.Sprintf("%s (not a git repo)", dir))
+			continue
+		}
+
+		remotes, err := g.Remotes()
+		if err != nil || len(remotes) == 0 {
+			checked = append(checked, fmt.Sprintf("%s (no remotes)", dir))
+			continue
+		}
+
+		// Found a valid git repo with remotes
+		return dir, nil
+	}
+
+	return "", fmt.Errorf("no valid git directory with remotes found for refinery in rig %s; checked: %s",
+		filepath.Base(rigPath), strings.Join(checked, ", "))
+}

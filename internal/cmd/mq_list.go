@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -30,8 +29,12 @@ func runMQList(cmd *cobra.Command, args []string) error {
 	// Create git client for branch verification when --verify is set
 	var gitClient *git.Git
 	if mqListVerify {
-		// Use the refinery's rig worktree to check branches
-		refineryRigPath := filepath.Join(r.Path, "refinery", "rig")
+		// Use the refinery's git directory to check branches (gt-zcj5r).
+		// Resolves refinery/rig or mayor/rig, validating git + remotes.
+		refineryRigPath, err := refinery.ResolveRefineryGitDir(r.Path)
+		if err != nil {
+			return fmt.Errorf("resolving refinery git directory for --verify: %w", err)
+		}
 		gitClient = git.NewGit(refineryRigPath)
 	}
 

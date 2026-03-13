@@ -76,6 +76,26 @@ func runBdCommand(ctx context.Context, args []string, workDir, beadsDir string, 
 
 	runErr := cmd.Run()
 
+	// If bd doesn't support --flat, retry without it. This mirrors the retry
+	// logic in beads.go:run() and handles bd versions < 0.59 where --flat
+	// is not recognized.
+	if runErr != nil && strings.Contains(stderr.String(), "unknown flag: --flat") {
+		retryArgs := make([]string, 0, len(args))
+		for _, a := range args {
+			if a != "--flat" {
+				retryArgs = append(retryArgs, a)
+			}
+		}
+		stdout.Reset()
+		stderr.Reset()
+		cmd = exec.CommandContext(ctx, "bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+		cmd.Dir = workDir
+		cmd.Env = env
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr = cmd.Run()
+	}
+
 	if runErr != nil {
 		return nil, &bdError{
 			Err:    runErr,

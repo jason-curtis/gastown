@@ -1126,9 +1126,7 @@ func TestValidateRecipient(t *testing.T) {
 	// Use beads.NewIsolatedWithPort with a unique random prefix to avoid Dolt
 	// primary key collisions with production beads (e.g., gt-mayor).
 	// NewIsolatedWithPort directs bd init to the ephemeral server via
-	// --server-port and GT_DOLT_PORT, and uses --db flag for subsequent
-	// commands (bypassing Dolt). We set BEADS_DB so that the Router's
-	// external bd calls also use the same isolated SQLite database.
+	// --server-port and GT_DOLT_PORT.
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		t.Fatalf("rand: %v", err)
@@ -1139,10 +1137,14 @@ func TestValidateRecipient(t *testing.T) {
 		t.Fatalf("bd init: %v", err)
 	}
 
-	// Point BEADS_DB at the isolated SQLite file so the Router's
-	// runBdCommand (which inherits process env) uses it too.
-	beadsDB := filepath.Join(beadsDir, "beads.db")
-	t.Setenv("BEADS_DB", beadsDB)
+	// Set BEADS_DOLT_PORT so the Router's runBdCommand (which inherits
+	// process env) connects to the test Dolt container, not production.
+	// The isolated Beads instance strips BEADS_DB from its env, so agents
+	// are created in Dolt only. The Router must also use Dolt to find them.
+	t.Setenv("BEADS_DOLT_PORT", testutil.DoltContainerPort())
+	// Clear any inherited BEADS_DB to prevent bd from reading a SQLite
+	// file that doesn't contain the test agents.
+	t.Setenv("BEADS_DB", "")
 
 	// Register custom types required for agent beads.
 	if _, err := b.Run("config", "set", "types.custom", "agent,role,rig,convoy,slot,queue,event,message,molecule,gate,merge-request"); err != nil {
@@ -1150,8 +1152,8 @@ func TestValidateRecipient(t *testing.T) {
 	}
 
 	// Create test agent beads with gt:agent label.
-	// Safe to use "gt-" prefixed IDs since both NewIsolated (--db) and the
-	// Router (BEADS_DB env) point to the same local SQLite database.
+	// Safe to use "gt-" prefixed IDs since both the isolated Beads instance
+	// and the Router (via BEADS_DOLT_PORT) query the same test Dolt server.
 	createAgent := func(id, title string) {
 		if _, err := b.Run("create", title, "--labels=gt:agent", "--id="+id, "--force"); err != nil {
 			t.Fatalf("creating agent %s: %v", id, err)

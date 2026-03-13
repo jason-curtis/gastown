@@ -219,15 +219,15 @@ type Engineer struct {
 }
 
 // NewEngineer creates a new Engineer for the given rig.
-func NewEngineer(r *rig.Rig) *Engineer {
+// Returns an error if no valid git directory with remotes is found (gt-zcj5r).
+func NewEngineer(r *rig.Rig) (*Engineer, error) {
 	cfg := DefaultMergeQueueConfig()
 
-	// Determine the git working directory for refinery operations.
-	// Prefer refinery/rig worktree, fall back to mayor/rig (legacy architecture).
-	// Using rig.Path directly would find town's .git with rig-named remotes instead of "origin".
-	gitDir := filepath.Join(r.Path, "refinery", "rig")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		gitDir = filepath.Join(r.Path, "mayor", "rig")
+	// Determine the git working directory for refinery operations (gt-zcj5r).
+	// Validates the directory is a git repo with remotes before using it.
+	gitDir, err := ResolveRefineryGitDir(r.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving refinery git directory for rig %s: %w", r.Name, err)
 	}
 	beadsClient := beads.New(r.Path)
 
@@ -250,7 +250,7 @@ func NewEngineer(r *rig.Rig) *Engineer {
 		},
 		mergeSlotMaxRetries:   10,
 		mergeSlotRetryBackoff: 500 * time.Millisecond,
-	}
+	}, nil
 }
 
 // SetOutput sets the output writer for user-facing messages.

@@ -664,12 +664,14 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			return fmt.Errorf("cannot determine source issue from branch '%s'; use --issue to specify", branch)
 		}
 
-		// Initialize beads — warn if resolved to a local .beads/ (no redirect).
-		// Without a redirect, MR beads are invisible to the Refinery.
+		// Initialize beads — use rig-level beads path so MR beads are visible
+		// to the Refinery. If redirect resolves locally, fall back to rig root (gt-zcj5r).
 		resolvedBeads := beads.ResolveBeadsDir(cwd)
-		if beads.IsLocalBeadsDir(cwd, resolvedBeads) {
+		if beads.IsLocalBeadsDir(cwd, resolvedBeads) && rigName != "" {
+			rigBeadsPath := filepath.Join(townRoot, rigName)
 			fmt.Fprintf(os.Stderr, "WARNING: beads resolved to local dir %s (no shared-beads redirect)\n", resolvedBeads)
-			fmt.Fprintf(os.Stderr, "  MR beads written here will be invisible to the Refinery — run 'gt polecat repair' to fix\n")
+			fmt.Fprintf(os.Stderr, "  Using rig-level beads at %s so Refinery can see the MR\n", rigBeadsPath)
+			resolvedBeads = rigBeadsPath
 		}
 		bd := beads.NewWithBeadsDir(cwd, resolvedBeads)
 

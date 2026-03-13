@@ -39,14 +39,18 @@ func TestDefaultMergeQueueConfig(t *testing.T) {
 
 func TestEngineer_LoadConfig_NoFile(t *testing.T) {
 	// Create a temp directory without config.json
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	r := &rig.Rig{
 		Name: "test-rig",
 		Path: tmpDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
 	// Should not error with missing config file
 	if err := e.LoadConfig(); err != nil {
@@ -61,7 +65,11 @@ func TestEngineer_LoadConfig_NoFile(t *testing.T) {
 
 func TestEngineer_LoadConfig_WithMergeQueue(t *testing.T) {
 	// Create a temp directory with config.json
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	// Write config file
 	config := map[string]interface{}{
@@ -88,7 +96,7 @@ func TestEngineer_LoadConfig_WithMergeQueue(t *testing.T) {
 		Path: tmpDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
 	if err := e.LoadConfig(); err != nil {
 		t.Errorf("unexpected error loading config: %v", err)
@@ -119,7 +127,11 @@ func TestEngineer_LoadConfig_WithMergeQueue(t *testing.T) {
 
 func TestEngineer_LoadConfig_NoMergeQueueSection(t *testing.T) {
 	// Create a temp directory with config.json without merge_queue
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	// Write config file without merge_queue
 	config := map[string]interface{}{
@@ -138,7 +150,7 @@ func TestEngineer_LoadConfig_NoMergeQueueSection(t *testing.T) {
 		Path: tmpDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
 	if err := e.LoadConfig(); err != nil {
 		t.Errorf("unexpected error loading config: %v", err)
@@ -151,7 +163,11 @@ func TestEngineer_LoadConfig_NoMergeQueueSection(t *testing.T) {
 }
 
 func TestEngineer_LoadConfig_InvalidPollInterval(t *testing.T) {
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	config := map[string]interface{}{
 		"merge_queue": map[string]interface{}{
@@ -169,16 +185,20 @@ func TestEngineer_LoadConfig_InvalidPollInterval(t *testing.T) {
 		Path: tmpDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
-	err := e.LoadConfig()
+	err = e.LoadConfig()
 	if err == nil {
 		t.Error("expected error for invalid poll_interval")
 	}
 }
 
 func TestEngineer_LoadConfig_InvalidStaleClaimTimeout(t *testing.T) {
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	tests := []struct {
 		name    string
@@ -207,7 +227,7 @@ func TestEngineer_LoadConfig_InvalidStaleClaimTimeout(t *testing.T) {
 				Path: tmpDir,
 			}
 
-			e := mustNewEngineer(t, r)
+			e := NewEngineer(r)
 
 			err := e.LoadConfig()
 			if err == nil {
@@ -220,10 +240,10 @@ func TestEngineer_LoadConfig_InvalidStaleClaimTimeout(t *testing.T) {
 func TestNewEngineer(t *testing.T) {
 	r := &rig.Rig{
 		Name: "test-rig",
-		Path: testRigDir(t),
+		Path: "/tmp/test-rig",
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
 	if e.rig != r {
 		t.Error("expected rig to be set")
@@ -240,7 +260,11 @@ func TestNewEngineer(t *testing.T) {
 }
 
 func TestEngineer_LoadConfig_WithGates(t *testing.T) {
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-gates-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	config := map[string]interface{}{
 		"merge_queue": map[string]interface{}{
@@ -267,7 +291,7 @@ func TestEngineer_LoadConfig_WithGates(t *testing.T) {
 	}
 
 	r := &rig.Rig{Name: "test-rig", Path: tmpDir}
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 
 	if err := e.LoadConfig(); err != nil {
 		t.Fatalf("unexpected error loading config: %v", err)
@@ -294,7 +318,11 @@ func TestEngineer_LoadConfig_WithGates(t *testing.T) {
 }
 
 func TestEngineer_LoadConfig_GateInvalidTimeout(t *testing.T) {
-	tmpDir := testRigDir(t)
+	tmpDir, err := os.MkdirTemp("", "engineer-gates-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	tests := []struct {
 		name    string
@@ -323,7 +351,7 @@ func TestEngineer_LoadConfig_GateInvalidTimeout(t *testing.T) {
 			}
 
 			r := &rig.Rig{Name: "test-rig", Path: tmpDir}
-			e := mustNewEngineer(t, r)
+			e := NewEngineer(r)
 
 			err := e.LoadConfig()
 			if err == nil {
@@ -334,8 +362,8 @@ func TestEngineer_LoadConfig_GateInvalidTimeout(t *testing.T) {
 }
 
 func TestRunGate_Success(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 
 	result := e.runGate(context.Background(), "echo-test", &GateConfig{
@@ -351,8 +379,8 @@ func TestRunGate_Success(t *testing.T) {
 }
 
 func TestRunGate_Failure(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 
 	result := e.runGate(context.Background(), "fail-test", &GateConfig{
@@ -368,8 +396,8 @@ func TestRunGate_Failure(t *testing.T) {
 }
 
 func TestRunGate_EmptyCmd(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 
 	result := e.runGate(context.Background(), "empty", &GateConfig{
@@ -382,8 +410,8 @@ func TestRunGate_EmptyCmd(t *testing.T) {
 }
 
 func TestRunGate_Timeout(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 
 	result := e.runGate(context.Background(), "slow", &GateConfig{
@@ -400,8 +428,8 @@ func TestRunGate_Timeout(t *testing.T) {
 }
 
 func TestRunGates_Sequential_AllPass(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
@@ -421,8 +449,8 @@ func TestRunGates_Sequential_StopsOnFirstFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("gate commands run via sh -c; touch with Windows paths breaks under MSYS2 shell")
 	}
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 	e.output = io.Discard
 
@@ -451,8 +479,8 @@ func TestRunGates_Sequential_StopsOnFirstFailure(t *testing.T) {
 }
 
 func TestRunGates_Parallel_AllPass(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
@@ -469,8 +497,8 @@ func TestRunGates_Parallel_AllPass(t *testing.T) {
 }
 
 func TestRunGates_Parallel_AnyFailure(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 	e.output = io.Discard
 	e.config.Gates = map[string]*GateConfig{
@@ -493,8 +521,8 @@ func TestRunGates_Parallel_AnyFailure(t *testing.T) {
 }
 
 func TestRunGates_Empty(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.workDir = t.TempDir()
 	e.output = io.Discard
 	e.config.Gates = nil
@@ -550,18 +578,24 @@ func TestPolecatBranchAlwaysDeletedAfterMerge(t *testing.T) {
 
 func TestPostMergeConvoyCheck_NoTownBeads(t *testing.T) {
 	// postMergeConvoyCheck should silently return when town-level beads doesn't exist
-	tmpDir := t.TempDir()
+	tmpDir, err := os.MkdirTemp("", "engineer-convoy-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	// Create rig dir as a subdirectory of the "town root"
 	rigDir := filepath.Join(tmpDir, "testrig")
-	setupTestGitInRigDir(t, rigDir)
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &rig.Rig{
 		Name: "testrig",
 		Path: rigDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 	var buf bytes.Buffer
 	e.SetOutput(&buf)
 
@@ -581,17 +615,23 @@ func TestPostMergeConvoyCheck_NoTownBeads(t *testing.T) {
 
 func TestNotifyDeaconConvoyFeeding_SkipsWhenNoConvoyID(t *testing.T) {
 	// notifyDeaconConvoyFeeding should skip when MR has no ConvoyID
-	tmpDir := t.TempDir()
+	tmpDir, err := os.MkdirTemp("", "engineer-notify-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	rigDir := filepath.Join(tmpDir, "testrig")
-	setupTestGitInRigDir(t, rigDir)
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &rig.Rig{
 		Name: "testrig",
 		Path: rigDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 	var buf bytes.Buffer
 	e.SetOutput(&buf)
 
@@ -611,17 +651,23 @@ func TestNotifyDeaconConvoyFeeding_SkipsWhenNoConvoyID(t *testing.T) {
 func TestNotifyDeaconConvoyFeeding_AttemptsWhenConvoyID(t *testing.T) {
 	// notifyDeaconConvoyFeeding should attempt to send mail when ConvoyID is set.
 	// The send will fail (no beads setup in tmpdir) but we verify the attempt via output.
-	tmpDir := t.TempDir()
+	tmpDir, err := os.MkdirTemp("", "engineer-notify-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
 
 	rigDir := filepath.Join(tmpDir, "testrig")
-	setupTestGitInRigDir(t, rigDir)
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	r := &rig.Rig{
 		Name: "testrig",
 		Path: rigDir,
 	}
 
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 	var buf bytes.Buffer
 	e.SetOutput(&buf)
 

@@ -136,11 +136,18 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	// Background mode: spawn a Claude agent in a tmux session
 	// The Claude agent handles MR processing using git commands and beads
 
-	// Working directory must be a git repo with remotes (gt-zcj5r).
-	// Checks refinery/rig then mayor/rig, validating git + remotes at each.
-	refineryRigDir, err := ResolveRefineryGitDir(m.rig.Path)
-	if err != nil {
-		return fmt.Errorf("resolving refinery git directory: %w", err)
+	// Working directory is the refinery worktree (shares .git with mayor/polecats).
+	// If the worktree is missing (pruned, deleted, or corrupted), auto-repair it
+	// from the shared bare repo (.repo.git) instead of falling back to mayor/rig.
+	// Falling back to mayor/rig causes the refinery to operate in the mayor's
+	// clone, which can interfere with mayor operations and confuse agents.
+	refineryRigDir := filepath.Join(m.rig.Path, "refinery", "rig")
+	if _, err := os.Stat(refineryRigDir); os.IsNotExist(err) {
+		if repairErr := m.repairRefineryWorktree(refineryRigDir); repairErr != nil {
+			// Repair failed — fall back to mayor/rig as last resort.
+			_, _ = fmt.Fprintf(m.output, "⚠ Could not repair refinery worktree: %v (falling back to mayor/rig)\n", repairErr)
+			refineryRigDir = filepath.Join(m.rig.Path, "mayor", "rig")
+		}
 	}
 
 	// Ensure runtime settings exist in the shared refinery parent directory.
@@ -221,6 +228,7 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	}
 
 	_ = runtime.RunStartupFallback(t, sessionID, "refinery", runtimeConfig)
+	_ = runtime.DeliverStartupPromptFallback(t, sessionID, initialPrompt, runtimeConfig, constants.ClaudeStartTimeout)
 
 	// Stream refinery's Claude Code JSONL conversation log to VictoriaLogs (opt-in).
 	if os.Getenv("GT_LOG_AGENT_OUTPUT") == "true" && os.Getenv("GT_OTEL_LOGS_URL") != "" {
@@ -233,6 +241,43 @@ func (m *Manager) Start(foreground bool, agentOverride string) error {
 	session.RecordAgentInstantiateFromDir(context.Background(), runID, runtimeConfig.ResolvedAgent,
 		"refinery", "refinery", sessionID, m.rig.Name, townRoot, "", refineryRigDir)
 
+	return nil
+}
+
+// repairRefineryWorktree recreates a missing refinery/rig worktree from the
+// shared bare repo (.repo.git). The refinery worktree is created during
+// `gt rig add` but can be lost if `git worktree prune` runs, the directory
+// is deleted, or the .git file becomes corrupted. This self-heals on startup
+// instead of requiring manual intervention.
+func (m *Manager) repairRefineryWorktree(refineryRigDir string) error {
+	bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
+	if _, err := os.Stat(bareRepoPath); os.IsNotExist(err) {
+		return fmt.Errorf("bare repo not found at %s", bareRepoPath)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(refineryRigDir), 0755); err != nil {
+		return fmt.Errorf("creating refinery dir: %w", err)
+	}
+
+	// Prune stale worktree entries so git doesn't reject the add
+	bareGit := git.NewGitWithDir(bareRepoPath, "")
+	_ = bareGit.WorktreePrune()
+
+	// Create worktree on the rig's default branch
+	defaultBranch := m.rig.DefaultBranch()
+	if err := bareGit.WorktreeAddExisting(refineryRigDir, defaultBranch); err != nil {
+		return fmt.Errorf("git worktree add: %w", err)
+	}
+
+	// Configure hooks path (matches rig add behavior)
+	refineryGit := git.NewGit(refineryRigDir)
+	if err := refineryGit.ConfigureHooksPath(); err != nil {
+		// Non-fatal: worktree is usable without hooks
+		_, _ = fmt.Fprintf(m.output, "⚠ Could not configure hooks for repaired worktree: %v\n", err)
+	}
+
+	_, _ = fmt.Fprintf(m.output, "✓ Auto-repaired missing refinery worktree at %s\n", refineryRigDir)
 	return nil
 }
 
@@ -579,42 +624,3 @@ func (m *Manager) notifyWorkerRejected(mr *MergeRequest, reason string) {
 
 // Town root is computed in Start() as filepath.Dir(m.rig.Path) and passed
 // through to callers — no filesystem-inference function needed (ZFC gt-qago).
-
-// ResolveRefineryGitDir determines the git working directory for refinery operations.
-// It checks candidates in order: refinery/rig, mayor/rig. For each, it verifies the
-// directory exists AND is a git repo with an "origin" remote. This prevents the refinery
-// from silently operating in a directory without remotes (gt-zcj5r).
-//
-// If no valid git directory is found, returns an error with diagnostic details.
-func ResolveRefineryGitDir(rigPath string) (string, error) {
-	candidates := []string{
-		filepath.Join(rigPath, "refinery", "rig"),
-		filepath.Join(rigPath, "mayor", "rig"),
-	}
-
-	var checked []string
-	for _, dir := range candidates {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			checked = append(checked, fmt.Sprintf("%s (not found)", dir))
-			continue
-		}
-
-		g := git.NewGit(dir)
-		if !g.IsRepo() {
-			checked = append(checked, fmt.Sprintf("%s (not a git repo)", dir))
-			continue
-		}
-
-		remotes, err := g.Remotes()
-		if err != nil || len(remotes) == 0 {
-			checked = append(checked, fmt.Sprintf("%s (no remotes)", dir))
-			continue
-		}
-
-		// Found a valid git repo with remotes
-		return dir, nil
-	}
-
-	return "", fmt.Errorf("no valid git directory with remotes found for refinery in rig %s; checked: %s",
-		filepath.Base(rigPath), strings.Join(checked, ", "))
-}

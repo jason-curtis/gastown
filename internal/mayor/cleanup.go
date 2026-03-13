@@ -111,7 +111,7 @@ func IsACPActive(townRoot string) bool {
 	// not as a side effect of checking if ACP is active.
 	// Removing the PID file here triggers the proxy's PID file monitoring,
 	// causing unexpected shutdowns.
-	return isProcessAlive(pid)
+	return acpProcessAlive(pid)
 }
 
 func IsACPActiveInWorkDir(workDir string) bool {

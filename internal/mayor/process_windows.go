@@ -8,24 +8,21 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const processStillActive = 259
-
-// isProcessAlive checks if a process with the given PID is still running.
-// On Windows, we open the process handle and check its exit code.
-func isProcessAlive(pid int) bool {
+// processAlive reports whether a process with the given PID exists and is
+// still running on Windows.
+//
+// Opening a handle with PROCESS_QUERY_LIMITED_INFORMATION is sufficient to
+// prove the process exists. ERROR_ACCESS_DENIED still indicates the process is
+// alive but inaccessible to the current user.
+func acpProcessAlive(pid int) bool {
 	if pid <= 0 || pid > math.MaxUint32 {
 		return false
 	}
 
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return false
+		return err == windows.ERROR_ACCESS_DENIED
 	}
-	defer windows.CloseHandle(handle)
-
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
-		return false
-	}
-	return exitCode == processStillActive
+	_ = windows.CloseHandle(handle)
+	return true
 }

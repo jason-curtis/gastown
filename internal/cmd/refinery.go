@@ -584,10 +584,7 @@ func runRefineryClaim(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	eng, err := refinery.NewEngineer(r)
-	if err != nil {
-		return fmt.Errorf("creating refinery engineer: %w", err)
-	}
+	eng := refinery.NewEngineer(r)
 	if err := eng.ClaimMR(mrID, workerID); err != nil {
 		return fmt.Errorf("claiming MR: %w", err)
 	}
@@ -614,10 +611,7 @@ func runRefineryRelease(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	eng, err := refinery.NewEngineer(r)
-	if err != nil {
-		return fmt.Errorf("creating refinery engineer: %w", err)
-	}
+	eng := refinery.NewEngineer(r)
 	if err := eng.ReleaseMR(mrID); err != nil {
 		return fmt.Errorf("releasing MR: %w", err)
 	}
@@ -704,10 +698,7 @@ func runRefineryReady(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engineer for the rig (it has beads access for status checking)
-	eng, err := refinery.NewEngineer(r)
-	if err != nil {
-		return fmt.Errorf("creating refinery engineer: %w", err)
-	}
+	eng := refinery.NewEngineer(r)
 
 	if refineryReadyAll {
 		return runRefineryReadyAll(eng, rigName)
@@ -832,10 +823,7 @@ func runRefineryBlocked(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create engineer for the rig (it has beads access for status checking)
-	eng, err := refinery.NewEngineer(r)
-	if err != nil {
-		return fmt.Errorf("creating refinery engineer: %w", err)
-	}
+	eng := refinery.NewEngineer(r)
 
 	// Get blocked MRs
 	blocked, err := eng.ListBlockedMRs()

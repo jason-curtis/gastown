@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -29,12 +30,8 @@ func runMQList(cmd *cobra.Command, args []string) error {
 	// Create git client for branch verification when --verify is set
 	var gitClient *git.Git
 	if mqListVerify {
-		// Use the refinery's git directory to check branches (gt-zcj5r).
-		// Resolves refinery/rig or mayor/rig, validating git + remotes.
-		refineryRigPath, err := refinery.ResolveRefineryGitDir(r.Path)
-		if err != nil {
-			return fmt.Errorf("resolving refinery git directory for --verify: %w", err)
-		}
+		// Use the refinery's rig worktree to check branches
+		refineryRigPath := filepath.Join(r.Path, "refinery", "rig")
 		gitClient = git.NewGit(refineryRigPath)
 	}
 
@@ -109,6 +106,12 @@ func runMQList(cmd *cobra.Command, args []string) error {
 
 		// Parse MR fields
 		fields := beads.ParseMRFields(issue)
+
+		// Filter by rig — wisps are shared across all rigs in the Dolt server,
+		// so we must filter to only show MRs belonging to this rig.
+		if fields != nil && fields.Rig != "" && !strings.EqualFold(fields.Rig, rigName) {
+			continue
+		}
 
 		// Filter by worker
 		if mqListWorker != "" {

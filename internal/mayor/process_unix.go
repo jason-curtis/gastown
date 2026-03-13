@@ -7,9 +7,7 @@ import (
 	"syscall"
 )
 
-// isProcessAlive checks if a process with the given PID is still running.
-// On Unix, we send signal 0 which checks process existence without side effects.
-func isProcessAlive(pid int) bool {
+func acpProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -19,6 +17,5 @@ func isProcessAlive(pid int) bool {
 		return false
 	}
 
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return process.Signal(syscall.Signal(0)) == nil
 }

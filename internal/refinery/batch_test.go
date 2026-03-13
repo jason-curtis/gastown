@@ -89,17 +89,8 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 func newTestEngineer(t *testing.T, workDir string, g *gitpkg.Git) *Engineer {
 	t.Helper()
-	// Create mayor/rig git structure for NewEngineer validation (gt-zcj5r).
-	// workDir is a git repo for actual test operations; mayor/rig satisfies the constructor.
-	mayorRig := filepath.Join(workDir, "mayor", "rig")
-	if err := os.MkdirAll(mayorRig, 0755); err != nil {
-		t.Fatal(err)
-	}
-	run(t, mayorRig, "git", "init", ".")
-	run(t, mayorRig, "git", "remote", "add", "origin", "https://example.com/test.git")
-
 	r := &rig.Rig{Name: "test-rig", Path: workDir}
-	e := mustNewEngineer(t, r)
+	e := NewEngineer(r)
 	e.git = g
 	e.workDir = workDir
 	e.output = &bytes.Buffer{}
@@ -145,8 +136,8 @@ func TestDefaultBatchConfig(t *testing.T) {
 // --- AssembleBatch tests ---
 
 func TestAssembleBatch_EmptyQueue(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	batch := e.AssembleBatch(nil, DefaultBatchConfig())
 	if len(batch) != 0 {
@@ -155,8 +146,8 @@ func TestAssembleBatch_EmptyQueue(t *testing.T) {
 }
 
 func TestAssembleBatch_LessThanMax(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
@@ -170,8 +161,8 @@ func TestAssembleBatch_LessThanMax(t *testing.T) {
 }
 
 func TestAssembleBatch_CapsAtMax(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	mrs := make([]*MRInfo, 10)
 	for i := range mrs {
@@ -185,8 +176,8 @@ func TestAssembleBatch_CapsAtMax(t *testing.T) {
 }
 
 func TestAssembleBatch_SkipsBlockedMRs(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
@@ -204,8 +195,8 @@ func TestAssembleBatch_SkipsBlockedMRs(t *testing.T) {
 }
 
 func TestAssembleBatch_IncludesBlockedByBatchMember(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
@@ -219,8 +210,8 @@ func TestAssembleBatch_IncludesBlockedByBatchMember(t *testing.T) {
 }
 
 func TestAssembleBatch_NilConfig(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 
 	mrs := []*MRInfo{
 		makeMR("mr-1", "branch-1", "main"),
@@ -372,8 +363,8 @@ func TestBuildRebaseStack_MissingBranch(t *testing.T) {
 // --- ProcessBatch tests ---
 
 func TestProcessBatch_EmptyBatch(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.output = &bytes.Buffer{}
 
 	result := e.ProcessBatch(context.Background(), nil, "main", DefaultBatchConfig())
@@ -820,8 +811,8 @@ func TestGetMergeMessage_FromBranch(t *testing.T) {
 }
 
 func TestGetMergeMessage_Fallback(t *testing.T) {
-	r := &rig.Rig{Name: "test-rig", Path: testRigDir(t)}
-	e := mustNewEngineer(t, r)
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
 	e.output = &bytes.Buffer{}
 
 	mr := &MRInfo{

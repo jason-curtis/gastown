@@ -1137,7 +1137,8 @@ func TestResolveDoltPort_ConfigYAMLTakesPrecedence(t *testing.T) {
 }
 
 func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GT_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	tmpDir := t.TempDir()
 	mayorDir := filepath.Join(tmpDir, "mayor")
 	if err := os.MkdirAll(mayorDir, 0755); err != nil {
@@ -1155,7 +1156,8 @@ func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
 }
 
 func TestResolveDoltPort_NoConfig(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GT_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	tmpDir := t.TempDir()
 	got := resolveDoltPort(tmpDir)
 	if got != 0 {
@@ -1201,7 +1203,8 @@ func TestAgentEnv_InjectsDoltPort(t *testing.T) {
 }
 
 func TestAgentEnv_NoDoltPortWithoutTownRoot(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GT_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	env := AgentEnv(AgentEnvConfig{
 		Role: "mayor",
 	})
@@ -1210,7 +1213,8 @@ func TestAgentEnv_NoDoltPortWithoutTownRoot(t *testing.T) {
 }
 
 func TestAgentEnv_NoDoltPortWithoutConfig(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GT_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	tmpDir := t.TempDir()
 	env := AgentEnv(AgentEnvConfig{
 		Role:     "mayor",

@@ -3,8 +3,13 @@
 package acp
 
 import (
+	"math"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
+
+const processStillActive = 259
 
 // signalsToHandle returns the signals that Forward() should listen for.
 // On Windows, only os.Interrupt is available (CTRL+C).
@@ -19,14 +24,27 @@ func (p *Proxy) setupProcessGroup() {
 }
 
 // isProcessAlive checks if the agent process is still running.
-// On Windows, we use os.Signal(nil) to check process liveness.
+// On Windows, we open the process handle and check its exit code.
 func (p *Proxy) isProcessAlive() bool {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return false
 	}
-	// On Windows, checking if a process is alive is often done by checking if wait fails
-	// or by trying to get a handle. os.Process.Signal(nil) is partially supported.
-	return p.cmd.Process.Signal(os.Signal(nil)) == nil
+	pid := p.cmd.Process.Pid
+	if pid <= 0 || pid > math.MaxUint32 {
+		return false
+	}
+
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return false
+	}
+	return exitCode == processStillActive
 }
 
 // terminateProcess kills the agent process.

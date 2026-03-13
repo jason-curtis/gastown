@@ -1182,6 +1182,35 @@ func getSessionPane(sessionName string) (string, error) {
 	return lines[0], nil
 }
 
+// closePreviousHandoffMail closes any existing hooked handoff mail beads for
+// an agent. This prevents handoff beads from accumulating across session cycles.
+// All errors are non-fatal — creating the new handoff is more important. (gt-w70t1b)
+func closePreviousHandoffMail(townRoot, agentID string) {
+	b := beads.New(townRoot)
+	issues, err := b.List(beads.ListOptions{
+		Status:   beads.StatusHooked,
+		Assignee: agentID,
+		Label:    "gt:message",
+		Priority: -1, // no filter
+	})
+	if err != nil || len(issues) == 0 {
+		return
+	}
+
+	var toClose []string
+	for _, issue := range issues {
+		if strings.Contains(issue.Title, "HANDOFF") {
+			toClose = append(toClose, issue.ID)
+		}
+	}
+
+	if len(toClose) > 0 {
+		if err := b.CloseWithReason("superseded: new handoff", toClose...); err != nil {
+			style.PrintWarning("could not close previous handoff mail: %v", err)
+		}
+	}
+}
+
 // sendHandoffMail sends a handoff mail to self and auto-hooks it.
 // Returns the created bead ID and any error.
 func sendHandoffMail(subject, message string) (string, error) {
@@ -1211,6 +1240,11 @@ func sendHandoffMail(subject, message string) (string, error) {
 	if townRoot == "" {
 		return "", fmt.Errorf("cannot detect town root")
 	}
+
+	// Close previous handoff mail beads to prevent accumulation (gt-w70t1b).
+	// Without this, each handoff cycle creates a new hooked bead but never
+	// closes the previous one, polluting the bead database.
+	closePreviousHandoffMail(townRoot, agentID)
 
 	// Build labels for mail metadata (matches mail router format)
 	labels := fmt.Sprintf("from:%s", agentID)

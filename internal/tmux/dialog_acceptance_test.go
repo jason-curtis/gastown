@@ -5,19 +5,28 @@ import (
 	"time"
 )
 
+// newShellSession creates a tmux session running /bin/sh on the test server.
+// Uses /bin/sh instead of the user's default shell to ensure a deterministic
+// "$" prompt that containsPromptIndicator can detect, regardless of the user's
+// shell configuration (e.g., fish with custom startup scripts that suppress
+// the prompt on isolated tmux servers).
+func newShellSession(t *testing.T, tm *Tmux, name string) {
+	t.Helper()
+	_ = tm.KillSession(name)
+	if err := tm.NewSessionWithCommand(name, "", "/bin/sh"); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	t.Cleanup(func() { _ = tm.KillSession(name) })
+}
+
 // TestAcceptWorkspaceTrustDialog_NoDialog verifies that when no trust dialog
 // is present (agent prompt visible), the function returns quickly without error.
 func TestAcceptWorkspaceTrustDialog_NoDialog(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-trust-nodlg-" + t.Name()
+	newShellSession(t, tm, sessionName)
 
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
-
-	// Session starts with a shell prompt containing ">", "$", or "%"
+	// Session starts with a /bin/sh prompt ("$").
 	// The polling loop should exit early when it sees the prompt.
 	start := time.Now()
 	err := tm.AcceptWorkspaceTrustDialog(sessionName)
@@ -38,12 +47,7 @@ func TestAcceptWorkspaceTrustDialog_NoDialog(t *testing.T) {
 func TestAcceptWorkspaceTrustDialog_DetectsDialog(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-trust-dlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
+	newShellSession(t, tm, sessionName)
 
 	// Simulate the trust dialog by echoing its text into the pane
 	if err := tm.SendKeys(sessionName, "echo 'Quick safety check - do you trust this folder?'"); err != nil {
@@ -66,12 +70,7 @@ func TestAcceptWorkspaceTrustDialog_DetectsDialog(t *testing.T) {
 func TestAcceptBypassPermissionsWarning_NoDialog(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-bypass-nodlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
+	newShellSession(t, tm, sessionName)
 
 	start := time.Now()
 	err := tm.AcceptBypassPermissionsWarning(sessionName)
@@ -91,12 +90,7 @@ func TestAcceptBypassPermissionsWarning_NoDialog(t *testing.T) {
 func TestAcceptBypassPermissionsWarning_DetectsDialog(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-bypass-dlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
+	newShellSession(t, tm, sessionName)
 
 	// Simulate the bypass permissions dialog
 	if err := tm.SendKeys(sessionName, "echo 'Bypass Permissions mode is enabled'"); err != nil {
@@ -115,12 +109,7 @@ func TestAcceptBypassPermissionsWarning_DetectsDialog(t *testing.T) {
 func TestAcceptStartupDialogs_NoDialogs(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-startup-nodlg-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
+	newShellSession(t, tm, sessionName)
 
 	start := time.Now()
 	err := tm.AcceptStartupDialogs(sessionName)
@@ -163,6 +152,7 @@ func TestContainsPromptIndicator(t *testing.T) {
 		{"zsh prompt", "╰─❯", true},
 		{"root prompt", "root@host:~#", true},
 		{"csh prompt", "host%", true},
+		{"fish prompt", "⋊> ~/code on main ◦                          09:51:12", true},
 		{"dialog text only", "Quick safety check\nDo you trust this folder?", false},
 		{"empty", "", false},
 		{"whitespace only", "   \n  \n  ", false},
@@ -183,12 +173,7 @@ func TestContainsPromptIndicator(t *testing.T) {
 func TestDismissStartupDialogsBlind_SendsKeys(t *testing.T) {
 	tm := newTestTmux(t)
 	sessionName := "gt-test-blind-dismiss-" + t.Name()
-
-	_ = tm.KillSession(sessionName)
-	if err := tm.NewSession(sessionName, ""); err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer func() { _ = tm.KillSession(sessionName) }()
+	newShellSession(t, tm, sessionName)
 
 	// Should complete quickly — no polling, no CapturePane
 	start := time.Now()

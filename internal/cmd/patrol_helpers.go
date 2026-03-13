@@ -294,8 +294,12 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 		return "", fmt.Errorf("created wisp but could not parse ID from output")
 	}
 
-	// Hook the wisp to the agent so gt mol status sees it
-	if err := BdCmd("update", patrolID, "--status=hooked", "--assignee="+cfg.Assignee).
+	// Hook the wisp to the agent so gt mol status sees it.
+	// Set type=molecule and label gt:infra so bd list's infra filter can hide
+	// patrol/formula wisps by default (gt-muvro). bd mol wisp creates them as
+	// type=epic which leaks through the filter.
+	if err := BdCmd("update", patrolID, "--status=hooked", "--assignee="+cfg.Assignee,
+		"--type=molecule", "--add-label=gt:infra").
 		WithAutoCommit().
 		WithBeadsDir(resolvedBeadsDir).
 		Dir(cfg.BeadsDir).

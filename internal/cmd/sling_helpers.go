@@ -755,6 +755,14 @@ func InstantiateFormulaOnBead(ctx context.Context, formulaName, beadID, title, h
 	}
 	telemetry.RecordMolWisp(ctx, formulaName, wispRootID, beadID, nil)
 
+	// Set type=molecule and label gt:infra so bd list's infra filter can hide
+	// formula wisps by default (gt-muvro). bd mol wisp creates them as type=epic.
+	_ = BdCmd("update", wispRootID, "--type=molecule", "--add-label=gt:infra").
+		Dir(formulaWorkDir).
+		WithAutoCommit().
+		WithGTRoot(townRoot).
+		Run()
+
 	// Step 3: Bond wisp to original bead (creates compound).
 	//
 	// Compatibility fallback:
@@ -837,6 +845,15 @@ func bondFormulaDirect(formulaName, beadID, formulaWorkDir, townRoot string, var
 	if rootID == "" {
 		return "", fmt.Errorf("direct bond output missing spawned root id (output: %s)", trimJSONForError(bondOut))
 	}
+
+	// Set type=molecule and label gt:infra so bd list's infra filter can hide
+	// formula wisps by default (gt-muvro). bd mol wisp creates them as type=epic.
+	_ = BdCmd("update", rootID, "--type=molecule", "--add-label=gt:infra").
+		Dir(formulaWorkDir).
+		WithAutoCommit().
+		WithGTRoot(townRoot).
+		Run()
+
 	return rootID, nil
 }
 

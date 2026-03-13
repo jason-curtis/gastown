@@ -176,6 +176,14 @@ func runSlingFormula(ctx context.Context, args []string) error {
 
 	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
 
+	// Set type=molecule and label gt:infra so bd list's infra filter can hide
+	// formula wisps by default (gt-muvro). bd mol wisp creates them as type=epic.
+	_ = BdCmd("update", wispRootID, "--type=molecule", "--add-label=gt:infra").
+		Dir(formulaWorkDir).
+		WithAutoCommit().
+		WithGTRoot(townRoot).
+		Run()
+
 	// Step 3: Hook the wisp bead with retry and verification.
 	// See: https://github.com/steveyegge/gastown/issues/148
 	hookDir := beads.ResolveHookDir(townRoot, wispRootID, "")

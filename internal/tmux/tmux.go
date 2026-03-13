@@ -1583,6 +1583,10 @@ func (t *Tmux) AcceptWorkspaceTrustDialog(session string) error {
 // Claude prompt ends with ">", shell prompts end with "$", "%", "#", or "❯".
 var promptSuffixes = []string{">", "$", "%", "#", "❯"}
 
+// promptPrefixes are strings that indicate a shell prompt is visible when they
+// appear at the start of a line. Fish shell uses "⋊>" as a prompt prefix.
+var promptPrefixes = []string{"⋊>"}
+
 // containsPromptIndicator checks if pane content contains a prompt indicator
 // that signals a shell or agent is ready (no dialog blocking it).
 func containsPromptIndicator(content string) bool {
@@ -1593,6 +1597,11 @@ func containsPromptIndicator(content string) bool {
 		}
 		for _, suffix := range promptSuffixes {
 			if strings.HasSuffix(trimmed, suffix) {
+				return true
+			}
+		}
+		for _, prefix := range promptPrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
 				return true
 			}
 		}

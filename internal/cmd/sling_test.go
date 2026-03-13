@@ -554,6 +554,158 @@ exit /b 0
 	}
 }
 
+// TestSlingAutoBurnsMoleculesWithoutForce verifies that gt sling auto-burns
+// stale molecules without requiring --force (gt-vonaw). Previously, if a bead
+// had an existing molecule and the assignee appeared alive, sling would error
+// with "has existing molecule(s)". Now molecules are always auto-burned when
+// a formula dispatch reaches the molecule check (the status guard above already
+// ensures the dispatch is authorized).
+func TestSlingAutoBurnsMoleculesWithoutForce(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Register rig so IsRigName("gastown") succeeds.
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigs := &config.RigsConfig{
+		Version: 1,
+		Rigs: map[string]config.RigEntry{
+			"gastown": {
+				GitURL:  "git@github.com:test/gastown.git",
+				AddedAt: time.Now().Truncate(time.Second),
+				BeadsConfig: &config.BeadsConfig{
+					Repo:   "local",
+					Prefix: "gt-",
+				},
+			},
+		},
+	}
+	if err := config.SaveRigsConfig(rigsPath, rigs); err != nil {
+		t.Fatalf("SaveRigsConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown", "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads dir: %v", err)
+	}
+
+	// Routes: gt-* resolves to gastown's rig beads dir.
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	routes := strings.Join([]string{
+		`{"prefix":"gt-","path":"gastown/mayor/rig"}`,
+		`{"prefix":"hq-","path":"."}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", "routes.jsonl"), []byte(routes), 0644); err != nil {
+		t.Fatalf("write routes.jsonl: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	// Bead is "open" with an assignee still set (stale assignee from race condition).
+	// Has an attached molecule (stale from previous polecat session).
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+if [ "$cmd" = "--allow-stale" ]; then
+  cmd="$1"
+  shift || true
+fi
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"open","assignee":"gastown/polecats/deadcat","description":"attached_molecule: gt-wisp-stale","dependencies":[{"id":"gt-wisp-stale","status":"open"}]}]'
+    ;;
+  update)
+    exit 0
+    ;;
+  version)
+    echo "bd 0.1.0"
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+set "cmd=%1"
+if "%cmd%"=="--allow-stale" set "cmd=%2"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"open","assignee":"gastown/polecats/deadcat","description":"attached_molecule: gt-wisp-stale","dependencies":[{"id":"gt-wisp-stale","status":"open"}]}]
+  exit /b 0
+)
+if "%cmd%"=="update" exit /b 0
+if "%cmd%"=="version" (
+  echo bd 0.1.0
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	beads.ResetBdAllowStaleCacheForTest()
+	t.Cleanup(beads.ResetBdAllowStaleCacheForTest)
+
+	// Stub isHookedAgentDead to return false (agent appears alive — the edge case)
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return false }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	prevDryRun := slingDryRun
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+		slingDryRun = prevDryRun
+	})
+	slingForce = false // No --force
+	slingNoConvoy = true
+	slingDryRun = true // Dry-run to avoid side effects
+
+	// Capture stdout to verify auto-burn message
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	err = runSling(nil, []string{"gt-test-autoburnmol", "gastown"})
+
+	w.Close()
+	os.Stdout = origStdout
+	var captured bytes.Buffer
+	_, _ = captured.ReadFrom(r)
+	stdout := captured.String()
+
+	// Key assertion: must NOT get "has existing molecule(s)" error (the old behavior).
+	if err != nil && strings.Contains(err.Error(), "existing molecule") {
+		t.Fatalf("gt-vonaw regression: got 'existing molecule(s)' error without --force: %v", err)
+	}
+
+	// Verify the dry-run output shows "Would burn" (auto-burn path taken)
+	if !strings.Contains(stdout, "Would burn") {
+		t.Errorf("expected 'Would burn' in stdout (auto-burn without --force), got: %q", stdout)
+	}
+}
+
 func TestSlingFormulaRollsBackSpawnedPolecatOnWispFailure(t *testing.T) {
 	townRoot := t.TempDir()
 

@@ -794,30 +794,23 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Guard: ensure only one molecule is attached to a work bead.
 	// Checks both dependency bonds (ground truth) and description metadata.
-	// When re-slinging with --force, burn ALL existing molecules before creating a new one.
-	// Without this, each sling creates a new wisp bonded to the bead, leaving orphaned molecules.
-	// NOTE: Uses local `force` (not `slingForce`) to respect auto-force paths (dead agent detection).
+	// Auto-burn ALL existing molecules before creating a new one (gt-vonaw).
+	// If we've gotten past the status guard above, the dispatch is authorized
+	// and any existing molecules are stale — the new dispatch will create its own.
+	// Previously this required --force or heuristic staleness checks, which had
+	// edge cases that caused spawn-exit loops on re-dispatch of failed work.
 	if formulaName != "" {
 		existingMolecules := collectExistingMolecules(info)
 		if len(existingMolecules) > 0 {
-			// Auto-burn when bead is unassigned (molecules are definitionally stale),
-			// or when the assigned agent's session is dead. `force` already includes
-			// dead-agent auto-force from the status check above.
-			stale := force ||
-				(info.Assignee == "" && (info.Status == "open" || info.Status == "in_progress")) ||
-				(info.Assignee != "" && isHookedAgentDeadFn(info.Assignee))
 			if slingDryRun {
 				fmt.Printf("  Would burn %d stale molecule(s): %s\n",
 					len(existingMolecules), strings.Join(existingMolecules, ", "))
-			} else if stale {
+			} else {
 				fmt.Printf("  %s Burning %d stale molecule(s) from previous assignment: %s\n",
 					style.Warning.Render("⚠"), len(existingMolecules), strings.Join(existingMolecules, ", "))
 				if err := burnExistingMolecules(existingMolecules, beadID, townRoot); err != nil {
 					return fmt.Errorf("burning stale molecules: %w", err)
 				}
-			} else {
-				return fmt.Errorf("bead %s already has %d attached molecule(s): %s\nUse --force to replace, or --hook-raw-bead to skip formula",
-					beadID, len(existingMolecules), strings.Join(existingMolecules, ", "))
 			}
 		}
 	}

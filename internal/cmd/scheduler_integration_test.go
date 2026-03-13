@@ -315,29 +315,22 @@ func TestSchedulerAutoConvoyCreation(t *testing.T) {
 	}
 
 	// Verify: convoy has a "tracks" dependency pointing to the rig bead.
-	// This is the core cross-rig link: convoy lives in HQ DB, bead in rig DB.
-	depArgs := beads.MaybePrependAllowStale([]string{"dep", "list", fields.Convoy, "--direction=down", "--type=tracks", "--json"})
-	depCmd := exec.Command("bd", depArgs...)
-	depCmd.Dir = hqPath
-	depOut, err := depCmd.Output()
+	// This is a cross-rig link: convoy lives in HQ DB, bead in rig DB.
+	// Use bdDepListRawIDs (raw SQL) instead of bd dep list, because bd dep list
+	// JOINs with the issues table and can't resolve cross-database dependencies.
+	depIDs, err := bdDepListRawIDs(filepath.Join(hqPath, ".beads"), fields.Convoy, "down", "tracks")
 	if err != nil {
-		t.Fatalf("bd dep list %s --type=tracks failed: %v", fields.Convoy, err)
-	}
-	var deps []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(depOut, &deps); err != nil {
-		t.Fatalf("parse dep list: %v\nraw: %s", err, depOut)
+		t.Fatalf("bdDepListRawIDs for convoy %s failed: %v", fields.Convoy, err)
 	}
 	foundTracked := false
-	for _, dep := range deps {
-		if dep.ID == beadID {
+	for _, id := range depIDs {
+		if id == beadID {
 			foundTracked = true
 			break
 		}
 	}
 	if !foundTracked {
-		t.Errorf("convoy %s should track bead %s via tracks dep, got deps: %s", fields.Convoy, beadID, depOut)
+		t.Errorf("convoy %s should track bead %s via tracks dep, got dep IDs: %v", fields.Convoy, beadID, depIDs)
 	}
 }
 

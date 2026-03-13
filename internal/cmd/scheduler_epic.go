@@ -296,11 +296,16 @@ type epicChild struct {
 }
 
 // getEpicChildren returns child issues of an epic via dependency lookup.
+// Uses bd dep list first, then falls back to direct SQL via bdDepListRawIDs
+// for cross-database dependencies where the JOIN fails (GH #2624).
 func getEpicChildren(epicID string) ([]epicChild, error) {
+	beadDir := resolveBeadDir(epicID)
+
+	// Primary: bd dep list (works for same-database deps).
 	depArgs := beads.MaybePrependAllowStale([]string{"dep", "list", epicID,
 		"--direction=down", "--type=depends_on", "--json"})
 	depCmd := exec.Command("bd", depArgs...)
-	depCmd.Dir = resolveBeadDir(epicID)
+	depCmd.Dir = beadDir
 	var stdout bytes.Buffer
 	depCmd.Stdout = &stdout
 
@@ -320,6 +325,26 @@ func getEpicChildren(epicID string) ([]epicChild, error) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &deps); err != nil {
 		return nil, fmt.Errorf("parsing dependency list: %w", err)
+	}
+
+	// Supplement: bd dep list may return partial results when some deps are
+	// cross-database (the JOIN fails for those — see GH #2624). Use direct SQL
+	// to find any deps that bd dep list missed.
+	rawIDs, rawErr := bdDepListRawIDs(beadDir, epicID, "down", "depends_on")
+	if rawErr == nil && len(rawIDs) > 0 {
+		existing := make(map[string]bool, len(deps))
+		for _, d := range deps {
+			existing[d.ID] = true
+		}
+		for _, id := range rawIDs {
+			if !existing[id] {
+				deps = append(deps, struct {
+					ID     string `json:"id"`
+					Title  string `json:"title"`
+					Status string `json:"status"`
+				}{ID: id})
+			}
+		}
 	}
 
 	children := make([]epicChild, 0, len(deps))

@@ -138,6 +138,7 @@ func setupSchedulerIntegrationTown(t *testing.T) (hqPath, rigPath, gtBinary stri
 	}
 	routes := []beads.Route{
 		{Prefix: hqPrefix + "-", Path: "."},
+		{Prefix: "hq-cv-", Path: "."},
 		{Prefix: rigPrefix + "-", Path: "testrig/mayor/rig"},
 	}
 	if err := beads.WriteRoutes(townBeadsDir, routes); err != nil {
@@ -316,22 +317,22 @@ func TestSchedulerAutoConvoyCreation(t *testing.T) {
 
 	// Verify: convoy has a "tracks" dependency pointing to the rig bead.
 	// This is the core cross-rig link: convoy lives in HQ DB, bead in rig DB.
-	depArgs := beads.MaybePrependAllowStale([]string{"dep", "list", fields.Convoy, "--direction=down", "--type=tracks", "--json"})
-	depCmd := exec.Command("bd", depArgs...)
-	depCmd.Dir = hqPath
+	// Uses bd sql (direct SQL) instead of bd dep list because bd dep list
+	// fails for cross-database dependencies (GH #2624).
+	query := fmt.Sprintf("SELECT depends_on_id FROM dependencies WHERE issue_id = '%s' AND type = 'tracks'", fields.Convoy)
+	depCmd := exec.Command("bd", "sql", query, "--json")
+	depCmd.Dir = filepath.Join(hqPath, ".beads")
 	depOut, err := depCmd.Output()
 	if err != nil {
-		t.Fatalf("bd dep list %s --type=tracks failed: %v", fields.Convoy, err)
+		t.Fatalf("bd sql deps for %s failed: %v", fields.Convoy, err)
 	}
-	var deps []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(depOut, &deps); err != nil {
-		t.Fatalf("parse dep list: %v\nraw: %s", err, depOut)
+	var depRows []map[string]string
+	if err := json.Unmarshal(depOut, &depRows); err != nil {
+		t.Fatalf("parse dep sql: %v\nraw: %s", err, depOut)
 	}
 	foundTracked := false
-	for _, dep := range deps {
-		if dep.ID == beadID {
+	for _, row := range depRows {
+		if row["depends_on_id"] == beadID {
 			foundTracked = true
 			break
 		}
@@ -576,6 +577,7 @@ func setupMultiRigSchedulerTown(t *testing.T) (hqPath, rig1Path, rig2Path, gtBin
 	}
 	routes := []beads.Route{
 		{Prefix: hqPrefix + "-", Path: "."},
+		{Prefix: "hq-cv-", Path: "."},
 		{Prefix: rig1Prefix + "-", Path: "rig1/mayor/rig"},
 		{Prefix: rig2Prefix + "-", Path: "rig2/mayor/rig"},
 	}

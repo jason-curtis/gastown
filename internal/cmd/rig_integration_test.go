@@ -60,6 +60,7 @@ var agentAllowlist = map[string][]string{
 	// Polecats are ephemeral worktrees for autonomous agents.
 	"polecat": {
 		"?? .gitignore", // EnsureGitignorePatterns: adds .claude/, .runtime/, .logs/, __pycache__/ patterns
+		"?? .claude/",   // EnsureSettingsForRole → commands.ProvisionFor: slash commands (handoff.md, review.md)
 	},
 }
 

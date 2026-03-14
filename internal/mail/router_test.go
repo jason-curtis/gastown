@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/testutil"
@@ -306,6 +307,11 @@ func TestSendFromCrewWorkspace_AvoidsEphemeralPrefixMismatch(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(townBeadsDir, "beads.db"), []byte{}, 0644); err != nil {
 		t.Fatalf("write beads.db: %v", err)
+	}
+	// Write sentinel files so EnsureCustomTypes/Statuses skip bd calls.
+	typesList := strings.Join(constants.BeadsCustomTypesList(), ",")
+	if err := os.WriteFile(filepath.Join(townBeadsDir, ".gt-types-configured"), []byte(typesList+"\n"), 0644); err != nil {
+		t.Fatalf("write types sentinel: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(`{"name":"test"}`), 0644); err != nil {
 		t.Fatalf("write town.json: %v", err)

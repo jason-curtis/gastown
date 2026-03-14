@@ -67,6 +67,8 @@ func makeRoutingTownWorkspace(t *testing.T) (string, string) {
 	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
 		t.Fatalf("mkdir .beads: %v", err)
 	}
+	writeBeadsSentinels(t, townRoot)
+	writeBeadsSentinels(t, filepath.Join(townRoot, ".beads"))
 	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
 		t.Fatalf("mkdir mayor: %v", err)
 	}
@@ -97,7 +99,7 @@ if [ -n "$BEADS_DIR" ]; then
 fi
 
 case "$*" in
-  "list --type=convoy --json --all --flat")
+  "list --type=convoy --json --all")
     if [ "$PWD" != "%s" ]; then
       echo "expected town root, got $PWD" >&2
       exit 1

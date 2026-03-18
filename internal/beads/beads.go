@@ -298,14 +298,6 @@ type UpdateOptions struct {
 	SetLabels    []string // Labels to set (replaces all existing)
 }
 
-// SyncStatus represents the sync status of the beads repository.
-type SyncStatus struct {
-	Branch    string
-	Ahead     int
-	Behind    int
-	Conflicts []string
-}
-
 // Beads wraps bd CLI operations for a working directory.
 type Beads struct {
 	workDir    string
@@ -585,14 +577,15 @@ func (b *Beads) buildRoutingEnv() []string {
 // environment slice. This ensures test isolation by preventing inherited
 // BD_ACTOR, BEADS_DB, GT_ROOT, HOME etc. from routing commands to production databases.
 //
-// Preserves GT_DOLT_PORT and BEADS_DOLT_PORT so that isolated-mode tests can
-// reach a test Dolt server on a non-default port.
+// Preserves GT_DOLT_PORT, BEADS_DOLT_PORT, and BEADS_DOLT_SERVER_HOST so that
+// isolated-mode tests can reach a test Dolt server on a non-default port/host.
 func filterBeadsEnv(environ []string) []string {
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
-		// Preserve port env vars needed to reach test Dolt servers.
+		// Preserve Dolt connection env vars needed to reach test/remote Dolt servers.
 		// These must be checked before the broad BEADS_ prefix strip below.
 		if strings.HasPrefix(env, "BEADS_DOLT_PORT=") ||
+			strings.HasPrefix(env, "BEADS_DOLT_SERVER_HOST=") ||
 			strings.HasPrefix(env, "GT_DOLT_PORT=") {
 			filtered = append(filtered, env)
 			continue
@@ -612,23 +605,33 @@ func filterBeadsEnv(environ []string) []string {
 	return filtered
 }
 
-// translateDoltPort ensures BEADS_DOLT_PORT is set when GT_DOLT_PORT is present.
-// Gas Town uses GT_DOLT_PORT; beads uses BEADS_DOLT_PORT. This translation
-// prevents bd subprocesses from falling back to metadata.json's port 3307
-// (production) when a test or daemon has set GT_DOLT_PORT to an alternate port.
+// translateDoltPort ensures BEADS_DOLT_PORT and BEADS_DOLT_SERVER_HOST are set
+// when their GT_ counterparts are present. Gas Town uses GT_DOLT_PORT and
+// GT_DOLT_HOST; beads uses BEADS_DOLT_PORT and BEADS_DOLT_SERVER_HOST. This
+// translation prevents bd subprocesses from falling back to localhost:3307
+// when a test or daemon has set GT_DOLT_* to alternate values.
 func translateDoltPort(env []string) []string {
-	var gtPort string
-	hasBDP := false
+	var gtPort, gtHost string
+	hasBDP, hasBDH := false, false
 	for _, e := range env {
 		if strings.HasPrefix(e, "GT_DOLT_PORT=") {
 			gtPort = strings.TrimPrefix(e, "GT_DOLT_PORT=")
 		}
+		if strings.HasPrefix(e, "GT_DOLT_HOST=") {
+			gtHost = strings.TrimPrefix(e, "GT_DOLT_HOST=")
+		}
 		if strings.HasPrefix(e, "BEADS_DOLT_PORT=") {
 			hasBDP = true
+		}
+		if strings.HasPrefix(e, "BEADS_DOLT_SERVER_HOST=") {
+			hasBDH = true
 		}
 	}
 	if gtPort != "" && !hasBDP {
 		env = append(env, "BEADS_DOLT_PORT="+gtPort)
+	}
+	if gtHost != "" && !hasBDH {
+		env = append(env, "BEADS_DOLT_SERVER_HOST="+gtHost)
 	}
 	return env
 }
@@ -1430,37 +1433,6 @@ func (b *Beads) AddDependency(issue, dependsOn string) error {
 func (b *Beads) RemoveDependency(issue, dependsOn string) error {
 	_, err := b.run("dep", "remove", issue, dependsOn)
 	return err
-}
-
-// Sync syncs beads with remote.
-func (b *Beads) Sync() error {
-	_, err := b.run("sync")
-	return err
-}
-
-// SyncFromMain syncs beads updates from main branch.
-func (b *Beads) SyncFromMain() error {
-	_, err := b.run("sync", "--from-main")
-	return err
-}
-
-// GetSyncStatus returns the sync status without performing a sync.
-func (b *Beads) GetSyncStatus() (*SyncStatus, error) {
-	out, err := b.run("sync", "--status", "--json")
-	if err != nil {
-		// If sync branch doesn't exist, return empty status
-		if strings.Contains(err.Error(), "does not exist") {
-			return &SyncStatus{}, nil
-		}
-		return nil, err
-	}
-
-	var status SyncStatus
-	if err := json.Unmarshal(out, &status); err != nil {
-		return nil, fmt.Errorf("parsing bd sync status output: %w", err)
-	}
-
-	return &status, nil
 }
 
 // Stats returns repository statistics.

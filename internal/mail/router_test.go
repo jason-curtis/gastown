@@ -317,6 +317,12 @@ func TestSendFromCrewWorkspace_AvoidsEphemeralPrefixMismatch(t *testing.T) {
 		t.Fatalf("write town.json: %v", err)
 	}
 
+	// Write sentinel files so beads.EnsureCustomTypes skips bd config calls.
+	typesList := strings.Join(constants.BeadsCustomTypesList(), ",")
+	if err := os.WriteFile(filepath.Join(townBeadsDir, ".gt-types-configured"), []byte(typesList+"\n"), 0644); err != nil {
+		t.Fatalf("write types sentinel: %v", err)
+	}
+
 	// Stub bd to reproduce the old behavior where --id msg-* with --ephemeral
 	// would fail prefix validation before ephemeral handling.
 	// The fix: sendToSingle no longer passes --id to bd create.

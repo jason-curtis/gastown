@@ -62,10 +62,19 @@ func runBdCommand(ctx context.Context, args []string, workDir, beadsDir string, 
 	// serving different databases, resulting in hangs until the read timeout kills it.
 	beads.CleanStaleDoltServerPID(beadsDir)
 
+	// bd v0.59+ requires --flat for list --json to produce JSON output.
+	// Without it, bd returns human-readable tree format that fails JSON parsing.
+	// The mail package calls bd directly (not via beads.Run), so it needs its
+	// own injection. (GH#2746)
+	args = beads.InjectFlatForListJSON(args)
+
 	cmd := exec.CommandContext(ctx, "bd", args...) //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = workDir
 
 	env := append(cmd.Environ(), "BEADS_DIR="+beadsDir)
+	if dbEnv := beads.DatabaseEnv(beadsDir); dbEnv != "" {
+		env = append(env, dbEnv)
+	}
 	env = append(env, extraEnv...)
 	env = append(env, telemetry.OTELEnvForSubprocess()...)
 	cmd.Env = env
@@ -76,9 +85,8 @@ func runBdCommand(ctx context.Context, args []string, workDir, beadsDir string, 
 
 	runErr := cmd.Run()
 
-	// If bd doesn't support --flat, retry without it. This mirrors the retry
-	// logic in beads.go:run() and handles bd versions < 0.59 where --flat
-	// is not recognized.
+	// If bd doesn't support --flat (< v0.59), retry without it.
+	// Same fallback pattern as beads.Run. (GH#2746)
 	if runErr != nil && strings.Contains(stderr.String(), "unknown flag: --flat") {
 		retryArgs := make([]string, 0, len(args))
 		for _, a := range args {
@@ -88,12 +96,12 @@ func runBdCommand(ctx context.Context, args []string, workDir, beadsDir string, 
 		}
 		stdout.Reset()
 		stderr.Reset()
-		cmd = exec.CommandContext(ctx, "bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
-		cmd.Dir = workDir
-		cmd.Env = env
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		runErr = cmd.Run()
+		retryCmd := exec.CommandContext(ctx, "bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+		retryCmd.Dir = workDir
+		retryCmd.Env = env
+		retryCmd.Stdout = &stdout
+		retryCmd.Stderr = &stderr
+		runErr = retryCmd.Run()
 	}
 
 	if runErr != nil {

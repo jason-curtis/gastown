@@ -382,6 +382,16 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 	writeBeadsSentinels(t, townRoot)
 	writeBeadsSentinels(t, filepath.Join(townRoot, ".beads"))
 
+	// Write sentinel files so beads.EnsureCustomTypes/Statuses skip bd calls.
+	typesList := strings.Join(constants.BeadsCustomTypesList(), ",")
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", ".gt-types-configured"), []byte(typesList+"\n"), 0644); err != nil {
+		t.Fatalf("write types sentinel: %v", err)
+	}
+	statusesList := strings.Join(constants.BeadsCustomStatusesList(), ",")
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", ".gt-statuses-configured"), []byte(statusesList+"\n"), 0644); err != nil {
+		t.Fatalf("write statuses sentinel: %v", err)
+	}
+
 	// Install bd stub script.
 	binDir := filepath.Join(townRoot, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {

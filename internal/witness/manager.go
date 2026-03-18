@@ -309,22 +309,16 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOver
 		roleConfig = nil
 	}
 	if roleConfig != nil && roleConfig.StartCommand != "" {
-		// Skip the hardcoded start_command when a non-Claude agent is configured.
-		// Built-in role TOMLs hardcode "exec claude ..." which bypasses the
-		// declarative agent resolution system. Fall through to
-		// BuildStartupCommandFromConfig so the correct agent command is built.
 		rc := config.ResolveRoleAgentConfig("witness", townRoot, rigPath)
-		if config.IsResolvedAgentClaude(rc) {
+		if !config.IsResolvedAgentClaude(rc) {
+			// Non-Claude agent: skip TOML start_command entirely.
+			// Built-in role TOMLs hardcode "exec claude ..." which is wrong
+			// for non-Claude agents. Fall through to BuildStartupCommandFromConfig
+			// which uses the resolved agent's command and args.
+		} else if !isBuiltinClaudeStartCommand(roleConfig.StartCommand) {
+			// Custom (non-builtin) start_command with Claude agent: use TOML
+			// pattern with template expansion.
 			cmd := beads.ExpandRolePattern(roleConfig.StartCommand, townRoot, rigName, "", "witness", session.PrefixFor(rigName))
-			// Prepend env sanitization: CLAUDECODE causes Claude Code to
-			// reject startup (nested session detection) when inherited from
-			// tmux server environment. NODE_OPTIONS can contain debugger flags
-			// that crash Claude's Node.js runtime.
-			// NOTE: "exec" is a shell builtin, not a binary. If the TOML
-			// start_command begins with "exec", we must keep exec as the
-			// outermost command so the shell handles it, then use env for
-			// the actual binary. "env ... exec cmd" fails because env tries
-			// to run "exec" as a program (exit 127).
 			if strings.HasPrefix(cmd, "exec ") {
 				cmd = "exec env -u CLAUDECODE NODE_OPTIONS='' " + strings.TrimPrefix(cmd, "exec ")
 			} else {
@@ -332,6 +326,9 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOver
 			}
 			return cmd, nil
 		}
+		// Non-Claude agent OR Claude with built-in start_command: fall
+		// through to BuildStartupCommandFromConfig for proper agent and
+		// model flag resolution.
 	}
 	initialPrompt := session.BuildStartupPrompt(session.BeaconConfig{
 		Recipient: session.BeaconRecipient("witness", "", rigName),
@@ -350,6 +347,14 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOver
 		return "", fmt.Errorf("building startup command: %w", err)
 	}
 	return command, nil
+}
+
+// isBuiltinClaudeStartCommand returns true if the start_command is the
+// built-in default from role TOMLs ("exec claude --dangerously-skip-permissions").
+// Custom start_commands (e.g., "exec run --town {town}") return false.
+func isBuiltinClaudeStartCommand(cmd string) bool {
+	trimmed := strings.TrimPrefix(cmd, "exec ")
+	return trimmed == "claude --dangerously-skip-permissions"
 }
 
 // Stop stops the witness.

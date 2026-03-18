@@ -1404,6 +1404,21 @@ func (t *Tmux) sendKeysLiteralWithRetry(target, text string, timeout time.Durati
 // queue up and execute one at a time. This prevents garbled input when
 // SessionStart hooks and nudges arrive simultaneously.
 func (t *Tmux) NudgeSession(session, message string) error {
+	return t.NudgeSessionWithOpts(session, message, NudgeOpts{})
+}
+
+// NudgeOpts controls optional behavior for nudge delivery.
+type NudgeOpts struct {
+	// SkipEscape omits the Escape keystroke (step 5) and the 600ms readline
+	// timeout (step 6) from the delivery protocol. Set this for agents where
+	// Escape cancels in-flight generation (e.g., Gemini CLI) rather than
+	// harmlessly exiting vim INSERT mode.
+	SkipEscape bool
+}
+
+// NudgeSessionWithOpts is like NudgeSession but accepts delivery options.
+// See NudgeOpts for available options.
+func (t *Tmux) NudgeSessionWithOpts(session, message string, opts NudgeOpts) error {
 	// Serialize nudges to this session to prevent interleaving.
 	// Use a timed lock to avoid permanent blocking if a previous nudge hung.
 	if !acquireNudgeLock(session, nudgeLockTimeout) {
@@ -1437,15 +1452,17 @@ func (t *Tmux) NudgeSession(session, message string) error {
 	// 4. Wait 500ms for text delivery to complete (tested, required)
 	time.Sleep(500 * time.Millisecond)
 
-	// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
-	// See: https://github.com/anthropics/gastown/issues/307
-	_, _ = t.run("send-keys", "-t", target, "Escape")
+	if !opts.SkipEscape {
+		// 5. Send Escape to exit vim INSERT mode if enabled (harmless in normal mode)
+		// See: https://github.com/anthropics/gastown/issues/307
+		_, _ = t.run("send-keys", "-t", target, "Escape")
 
-	// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
-	// so ESC is processed alone, not as a meta prefix for the subsequent Enter.
-	// Without this, ESC+Enter within 500ms becomes M-Enter (meta-return) which
-	// does NOT submit the line.
-	time.Sleep(600 * time.Millisecond)
+		// 6. Wait 600ms — must exceed bash readline's keyseq-timeout (500ms default)
+		// so ESC is processed alone, not as a meta prefix for the subsequent Enter.
+		// Without this, ESC+Enter within 500ms becomes M-Enter (meta-return) which
+		// does NOT submit the line.
+		time.Sleep(600 * time.Millisecond)
+	}
 
 	// 7. Send Enter with retry (critical for message submission)
 	var lastErr error
@@ -2634,6 +2651,14 @@ func (t *Tmux) ApplyTheme(session string, theme Theme) error {
 	return err
 }
 
+// ApplyWindowStyle sets the pane background (window-style) for a session.
+// This gives each session a distinct background color matching its theme,
+// complementing the status bar theme set by ApplyTheme.
+func (t *Tmux) ApplyWindowStyle(session string, theme Theme) error {
+	_, err := t.run("set-option", "-t", session, "window-style", theme.Style())
+	return err
+}
+
 // roleIcons maps role names to display icons for the status bar.
 // Uses centralized emojis from constants package.
 // Includes legacy keys ("coordinator", "health-check") for backwards compatibility.
@@ -2699,10 +2724,14 @@ func (t *Tmux) SetDynamicStatus(session string) error {
 }
 
 // ConfigureGasTownSession applies full Gas Town theming to a session.
-// This is a convenience method that applies theme, status format, and dynamic status.
+// This is a convenience method that applies theme, status format, dynamic status,
+// and pane background (window-style).
 func (t *Tmux) ConfigureGasTownSession(session string, theme Theme, rig, worker, role string) error {
 	if err := t.ApplyTheme(session, theme); err != nil {
 		return fmt.Errorf("applying theme: %w", err)
+	}
+	if err := t.ApplyWindowStyle(session, theme); err != nil {
+		return fmt.Errorf("applying window style: %w", err)
 	}
 	if err := t.SetStatusFormat(session, rig, worker, role); err != nil {
 		return fmt.Errorf("setting status format: %w", err)

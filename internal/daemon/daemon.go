@@ -175,12 +175,16 @@ func New(config *Config) (*Daemon, error) {
 		doltServer = NewDoltServerManager(config.TownRoot, patrolConfig.Patrols.DoltServer, logger.Printf)
 		if doltServer.IsEnabled() {
 			logger.Printf("Dolt server management enabled (port %d)", patrolConfig.Patrols.DoltServer.Port)
-			// Propagate Dolt port to process env so AgentEnv() passes it to
+			// Propagate Dolt connection info to process env so AgentEnv() passes it to
 			// all spawned agent sessions. Without this, bd in agent sessions
-			// auto-starts rogue Dolt instances. (GH#2412)
+			// auto-starts rogue Dolt instances or connects to localhost. (GH#2412)
 			portStr := strconv.Itoa(patrolConfig.Patrols.DoltServer.Port)
 			os.Setenv("GT_DOLT_PORT", portStr)
 			os.Setenv("BEADS_DOLT_PORT", portStr)
+			if patrolConfig.Patrols.DoltServer.Host != "" {
+				os.Setenv("GT_DOLT_HOST", patrolConfig.Patrols.DoltServer.Host)
+				os.Setenv("BEADS_DOLT_SERVER_HOST", patrolConfig.Patrols.DoltServer.Host)
+			}
 		}
 	}
 
@@ -194,6 +198,16 @@ func New(config *Config) (*Daemon, error) {
 			os.Setenv("GT_DOLT_PORT", portStr)
 			os.Setenv("BEADS_DOLT_PORT", portStr)
 			logger.Printf("Set GT_DOLT_PORT=%s from Dolt config (fallback)", portStr)
+		}
+	}
+
+	// Propagate Dolt host to process env so bd doesn't fall back to 127.0.0.1
+	// when the server runs on a remote machine (e.g., mini2 over Tailscale).
+	if os.Getenv("BEADS_DOLT_SERVER_HOST") == "" {
+		doltCfg := doltserver.DefaultConfig(config.TownRoot)
+		if doltCfg.Host != "" {
+			os.Setenv("BEADS_DOLT_SERVER_HOST", doltCfg.Host)
+			logger.Printf("Set BEADS_DOLT_SERVER_HOST=%s from Dolt config", doltCfg.Host)
 		}
 	}
 
@@ -1936,6 +1950,17 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 		return
 	}
 
+	// Stale hook guard: skip polecats whose hook_bead is already closed.
+	// When a polecat completes work normally (gt done), the hook_bead gets closed
+	// but may not be cleared from the agent bead before the session stops.
+	// Without this check, every heartbeat cycle fires a false CRASHED_POLECAT alert
+	// for the dead session + non-empty hook_bead combination.
+	if d.isBeadClosed(info.HookBead) {
+		d.logger.Printf("Skipping crash detection for %s/%s: hook_bead %s is already closed (work completed normally)",
+			rigName, polecatName, info.HookBead)
+		return
+	}
+
 	// Spawning guard: skip polecats being actively started by gt sling.
 	// agent_state='spawning' means the polecat bead was created (with hook_bead
 	// set atomically) but the tmux session hasn't been launched yet. Restarting
@@ -1961,6 +1986,18 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 				rigName, polecatName)
 			return
 		}
+	}
+
+	// Terminal state guard: skip polecats that have completed or been nuked (GH#2795).
+	// A polecat in agent_state=done or agent_state=nuked has shut down intentionally.
+	// The session being dead is expected — the daemon should NOT fire CRASHED_POLECAT.
+	// Without this, every heartbeat cycle floods the witness with duplicate
+	// RECOVERY_NEEDED alerts for completed/nuked polecats.
+	agentState := beads.AgentState(info.State)
+	if agentState == beads.AgentStateDone || agentState == beads.AgentStateNuked {
+		d.logger.Printf("Skipping crash detection for %s/%s: agent_state=%s (session shutdown expected)",
+			rigName, polecatName, info.State)
+		return
 	}
 
 	// TOCTOU guard: re-verify session is still dead before restarting.
@@ -2034,6 +2071,30 @@ func (d *Daemon) emitMassDeathEvent() {
 
 	// Clear the deaths to avoid repeated alerts
 	d.recentDeaths = nil
+}
+
+// isBeadClosed checks if a bead's status is "closed" by querying bd show --json.
+// Returns true if the bead exists and has status "closed", false otherwise.
+// On any error (bead not found, bd failure), returns false to err on the side
+// of crash detection rather than silently suppressing alerts.
+func (d *Daemon) isBeadClosed(beadID string) bool {
+	cmd := exec.Command(d.bdPath, "show", beadID, "--json") //nolint:gosec // G204: args are constructed internally
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = os.Environ()
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	var issues []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil || len(issues) == 0 {
+		return false
+	}
+
+	return issues[0].Status == "closed"
 }
 
 // notifyWitnessOfCrashedPolecat notifies the witness when a polecat crash is detected.
@@ -2136,9 +2197,11 @@ func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Durat
 			return
 		}
 
-		// If polecat has hooked work, it might just be stuck (not idle).
+		// If polecat has hooked work that is still open, it might be stuck (not idle).
 		// Don't reap — let checkPolecatSessionHealth handle stuck polecats.
-		if info.HookBead != "" {
+		// But if the hook_bead is closed, the work is done and this is just an idle
+		// polecat with a stale hook reference — safe to reap.
+		if info.HookBead != "" && !d.isBeadClosed(info.HookBead) {
 			return
 		}
 

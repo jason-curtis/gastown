@@ -1080,6 +1080,11 @@ func isSlingConfigError(err error) bool {
 // loadRigCommandVars reads rig settings and returns --var key=value strings
 // for all configured build pipeline commands (setup, typecheck, lint, test, build)
 // and the default branch (base_branch). Only non-empty values are included.
+//
+// Settings are resolved in priority order:
+//  1. Repository defaults: <rig>/mayor/rig/.gastown/settings.json (committed to git)
+//  2. Rig-local overrides: <rig>/settings/config.json (operator tuning)
+//  3. User --var flags (handled by caller, not here)
 func loadRigCommandVars(townRoot, rig string) []string {
 	if townRoot == "" || rig == "" {
 		return nil
@@ -1093,12 +1098,28 @@ func loadRigCommandVars(townRoot, rig string) []string {
 		vars = append(vars, fmt.Sprintf("base_branch=%s", rigCfg.DefaultBranch))
 	}
 
+	// Load repo-sourced settings (floor — committed to git, always present after clone)
+	var repoMQ *config.MergeQueueConfig
+	repoRoot := filepath.Join(townRoot, rig, "mayor", "rig")
+	repoSettings, _ := config.LoadRepoSettings(repoRoot)
+	if repoSettings != nil {
+		repoMQ = repoSettings.MergeQueue
+	}
+
+	// Load rig-local settings (override — operator tuning)
+	var localMQ *config.MergeQueueConfig
 	settingsPath := filepath.Join(townRoot, rig, "settings", "config.json")
-	settings, err := config.LoadRigSettings(settingsPath)
-	if err != nil || settings == nil || settings.MergeQueue == nil {
+	localSettings, err := config.LoadRigSettings(settingsPath)
+	if err == nil && localSettings != nil {
+		localMQ = localSettings.MergeQueue
+	}
+
+	// Merge: repo defaults + local overrides
+	mq := config.MergeSettingsCommand(repoMQ, localMQ)
+	if mq == nil {
 		return vars
 	}
-	mq := settings.MergeQueue
+
 	if mq.SetupCommand != "" {
 		vars = append(vars, fmt.Sprintf("setup_command=%s", mq.SetupCommand))
 	}
@@ -1180,4 +1201,31 @@ func updateAgentMode(agentID, mode, workDir, townBeadsDir string) {
 	if err := bd.UpdateAgentDescriptionFields(agentBeadID, beads.AgentFieldUpdates{Mode: &mode}); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s mode: %v\n", agentBeadID, err)
 	}
+}
+
+// lookupPriorAttempt checks if there are existing open MRs for the given issue.
+// If found, returns formula variables with the prior branch name so the new
+// polecat can cherry-pick or reference prior work instead of starting from scratch.
+// Returns nil if no prior attempt exists. (GH#gt-zqvj)
+func lookupPriorAttempt(beadsDir, issueID string) []string {
+	bd := beads.New(beadsDir)
+	mrs, err := bd.FindOpenMRsForIssue(issueID)
+	if err != nil || len(mrs) == 0 {
+		return nil
+	}
+
+	// Use the most recent MR (last in list) as the prior attempt.
+	prior := mrs[len(mrs)-1]
+	fields := beads.ParseMRFields(prior)
+	if fields == nil || fields.Branch == "" {
+		return nil
+	}
+
+	vars := []string{
+		fmt.Sprintf("prior_branch=%s", fields.Branch),
+	}
+	if fields.CloseReason != "" {
+		vars = append(vars, fmt.Sprintf("prior_failure=%s", fields.CloseReason))
+	}
+	return vars
 }

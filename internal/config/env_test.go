@@ -1137,8 +1137,8 @@ func TestResolveDoltPort_ConfigYAMLTakesPrecedence(t *testing.T) {
 }
 
 func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	tmpDir := t.TempDir()
 	mayorDir := filepath.Join(tmpDir, "mayor")
 	if err := os.MkdirAll(mayorDir, 0755); err != nil {
@@ -1156,8 +1156,8 @@ func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
 }
 
 func TestResolveDoltPort_NoConfig(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	tmpDir := t.TempDir()
 	got := resolveDoltPort(tmpDir)
 	if got != 0 {
@@ -1203,8 +1203,8 @@ func TestAgentEnv_InjectsDoltPort(t *testing.T) {
 }
 
 func TestAgentEnv_NoDoltPortWithoutTownRoot(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	env := AgentEnv(AgentEnvConfig{
 		Role: "mayor",
 	})
@@ -1213,8 +1213,8 @@ func TestAgentEnv_NoDoltPortWithoutTownRoot(t *testing.T) {
 }
 
 func TestAgentEnv_NoDoltPortWithoutConfig(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	tmpDir := t.TempDir()
 	env := AgentEnv(AgentEnvConfig{
 		Role:     "mayor",
@@ -1222,4 +1222,34 @@ func TestAgentEnv_NoDoltPortWithoutConfig(t *testing.T) {
 	})
 	assertNotSet(t, env, "GT_DOLT_PORT")
 	assertNotSet(t, env, "BEADS_DOLT_PORT")
+}
+
+func TestClaudeConfigDir_Default(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("getting home dir: %v", err)
+	}
+
+	got, err := ClaudeConfigDir()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(home, ".claude")
+	if got != want {
+		t.Errorf("ClaudeConfigDir() = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeConfigDir_EnvVar(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", customDir)
+
+	got, err := ClaudeConfigDir()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != customDir {
+		t.Errorf("ClaudeConfigDir() = %q, want %q", got, customDir)
+	}
 }

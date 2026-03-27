@@ -257,16 +257,7 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 	}
 
 	// Note: role slot no longer set - role definitions are config-based
-
-	// Set hook_bead slot so gt mol status can find hooked work via the
-	// agent bead's JSON field (primary lookup path in lookupHookedWork).
-	// The fallback query (status=hooked + assignee) is unreliable for
-	// cross-database scenarios. Restoring per hq-gfg.
-	if fields != nil && fields.HookBead != "" {
-		if _, slotErr := b.run("slot", "set", id, "hook", fields.HookBead); slotErr != nil {
-			// Non-fatal: fallback query may still find the work bead
-		}
-	}
+	// Note: hook_bead slot no longer set - bd slot removed in v0.62 (hq-l6mm5)
 
 	return &issue, nil
 }
@@ -351,15 +342,7 @@ func (b *Beads) CreateOrReopenAgentBead(id, title string, fields *AgentFields) (
 	}
 
 	// Note: role slot no longer set - role definitions are config-based
-
-	// Set hook_bead slot so gt mol status can find hooked work via the
-	// agent bead's JSON field (primary lookup path in lookupHookedWork).
-	// Restoring per hq-gfg.
-	if fields != nil && fields.HookBead != "" {
-		if _, slotErr := target.run("slot", "set", id, "hook", fields.HookBead); slotErr != nil {
-			// Non-fatal: fallback query may still find the work bead
-		}
-	}
+	// Note: hook_bead slot no longer set - bd slot removed in v0.62 (hq-l6mm5)
 
 	// Return the updated bead
 	return target.Show(id)
@@ -422,22 +405,32 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 }
 
 // UpdateAgentState updates the agent_state field in an agent bead.
-// Uses `bd set-state` (bd 0.62.0+) to update the state dimension,
-// then syncs the description's agent_state field to match (gt-ulom).
+// When an in-process store is available and the bead is local, uses the store
+// directly (label-based, mirrors bd set-state behavior). Falls back to
+// bd set-state via runWithRouting for cross-rig agent beads.
 func (b *Beads) UpdateAgentState(id string, state string) (retErr error) {
 	defer func() { telemetry.RecordAgentStateChange(context.Background(), id, state, nil, retErr) }()
-	// Update agent state using bd set-state command (bd 0.62.0+).
-	// Use runWithRouting so bd can resolve cross-prefix agent beads (e.g., wa-*
-	// agent beads from hq context) via routes.jsonl instead of BEADS_DIR.
-	_, err := b.runWithRouting("set-state", id, "agent_state="+state)
+
+	var err error
+	if b.store != nil {
+		// Use store path only when the bead is local (same beads directory).
+		// For cross-rig beads, fall through to runWithRouting.
+		targetDir := ResolveRoutingTarget(b.getTownRoot(), id, b.getResolvedBeadsDir())
+		if targetDir == b.getResolvedBeadsDir() {
+			err = b.storeUpdateAgentState(id, state)
+		} else {
+			_, err = b.runWithRouting("set-state", id, "agent_state="+state)
+		}
+	} else {
+		// No store: use bd set-state (bd 0.62.0+) with routing support.
+		_, err = b.runWithRouting("set-state", id, "agent_state="+state)
+	}
+
 	if err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
 	}
 
-	// Sync the description's agent_state field with the column (gt-ulom).
-	// Without this, the description stays stale (e.g., "spawning" after the
-	// column transitions to "working"), causing bd show and dashboards to
-	// display incorrect state after idle polecat reuse via gt sling.
+	// Sync the description's agent_state field to match (gt-ulom).
 	_ = b.UpdateAgentDescriptionFields(id, AgentFieldUpdates{AgentState: &state})
 
 	return nil

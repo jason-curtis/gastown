@@ -69,6 +69,22 @@ sudo dnf install -y git golang
 sudo dnf install -y tmux
 ```
 
+### Windows (WSL2)
+
+Gas Town requires Unix process management (tmux, signals, Unix sockets) and does not
+support native Win32. **Windows users should install and run Gas Town inside WSL2.**
+
+```powershell
+# 1. Install WSL2 (run in PowerShell as Administrator)
+wsl --install -d Ubuntu-24.04
+
+# 2. Restart your machine, then open the Ubuntu terminal
+```
+
+Inside your WSL2 Ubuntu terminal, follow the Linux (Debian/Ubuntu) instructions above
+to install Go, Git, Dolt, tmux, and other prerequisites. Then install and run Gas Town
+from within WSL2 as you would on native Linux.
+
 ### Verify Prerequisites
 
 ```bash

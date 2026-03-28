@@ -140,10 +140,10 @@ $ brew install gastown                                    # Homebrew (recommende
 $ npm install -g @gastown/gt                              # npm
 $ go install github.com/steveyegge/gastown/cmd/gt@latest  # From source (macOS/Linux)
 
-# Windows (or if go install fails): clone and build manually
-$ git clone https://github.com/steveyegge/gastown.git && cd gastown
-$ go build -o gt.exe ./cmd/gt
-$ mv gt.exe $HOME/go/bin/  # or add gastown to PATH
+# Windows: use WSL2 (native Win32 is not supported)
+$ wsl --install -d Ubuntu-24.04   # then restart and open Ubuntu terminal
+# Inside WSL2, install Go and run:
+$ go install github.com/steveyegge/gastown/cmd/gt@latest
 
 # If using go install, add Go binaries to PATH (add to ~/.zshrc or ~/.bashrc)
 export PATH="$PATH:$HOME/go/bin"

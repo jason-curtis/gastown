@@ -11,6 +11,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 // mockExecutor implements TmuxExecutor for testing.
@@ -659,6 +660,7 @@ func TestExecute_SaveUnlockedFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based read-only directories are not reliable on Windows")
 	}
+	testutil.SkipIfWSL(t)
 	setupTestRegistry(t)
 	townRoot := setupTestTown(t)
 	mgr := NewManager(townRoot)

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 func TestInstallForRole_RoleAware(t *testing.T) {
@@ -198,6 +200,7 @@ func TestSyncForRole_WriteError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not support read-only directories reliably")
 	}
+	testutil.SkipIfWSL(t)
 
 	dir := t.TempDir()
 	// Create a read-only parent to prevent MkdirAll from creating the hooks dir

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 func TestBeadsRedirectTargetCheck_ValidTarget(t *testing.T) {
@@ -619,6 +621,7 @@ func TestBeadsRedirectTargetCheck_FixMetadataRepairFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not enforce POSIX directory write bits for this chmod-based failure path")
 	}
+	testutil.SkipIfWSL(t)
 
 	// Target directory exists but metadata repair can't fix it (no metadata.json,
 	// and the directory is writable so EnsureConfigYAML succeeds but with empty

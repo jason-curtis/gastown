@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 // TestGetEmbeddedFormulas verifies embedded formulas can be read and hashed.
@@ -720,6 +722,7 @@ func TestCheckFormulaHealth_ErrorCounter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Chmod(path, 0000) does not prevent reading on Windows")
 	}
+	testutil.SkipIfWSL(t)
 	tmpDir := t.TempDir()
 
 	// Provision fresh

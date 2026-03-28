@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
 func TestAtomicWriteJSON(t *testing.T) {
@@ -197,6 +199,7 @@ func TestAtomicWriteFileReadOnlyDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based read-only directories are not reliable on Windows")
 	}
+	testutil.SkipIfWSL(t)
 
 	tmpDir := t.TempDir()
 	roDir := filepath.Join(tmpDir, "readonly")
@@ -273,6 +276,7 @@ func TestAtomicWritePreservesOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based read-only directories are not reliable on Windows")
 	}
+	testutil.SkipIfWSL(t)
 
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "preserve.txt")

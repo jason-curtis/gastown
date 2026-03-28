@@ -9,7 +9,7 @@ import (
 // RequireTownEnv skips the test if the process is not running inside a Gas
 // Town workspace. It checks workspace.FindFromCwd and, when a workspace is
 // found, verifies that mayor/rigs.json exists (a proxy for a fully
-// initialised town).
+// initialized town).
 //
 // Use this guard for integration tests that shell out to gt/bd or otherwise
 // depend on a live Gas Town directory tree being present. Tests that create

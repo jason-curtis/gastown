@@ -136,7 +136,7 @@ that may not be available in every environment. Use the helpers in
 |--------|-------------|
 | `testutil.RequireDoltContainer(t)` | Test needs a running Dolt SQL server (starts a Docker container) |
 | `testutil.StartIsolatedDoltContainer(t)` | Test needs its own isolated Dolt instance (per-test container) |
-| `testutil.RequireTownEnv(t)` | Test needs a live Gas Town workspace (checks `workspace.FindFromCwd`) |
+| `testutil.RequireTownEnv(t)` | Test needs a live Gas Town workspace (checks `workspace.FindFromCwd` + `rigs.json`); returns root path |
 
 **`requireDoltServer`** (in `internal/cmd`) is a local wrapper around
 `testutil.RequireDoltContainer` used by the `cmd` package's integration tests.

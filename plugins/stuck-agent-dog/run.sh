@@ -41,37 +41,41 @@ while IFS='|' read -r RIG PREFIX; do
   for PCAT_PATH in "$POLECAT_DIR"/*/; do
     [ -d "$PCAT_PATH" ] || continue
     PCAT_NAME=$(basename "$PCAT_PATH")
-    SESSION_NAME="${PREFIX}-${PCAT_NAME}"
+    SESSION_NAME="${PREFIX}-polecat-${PCAT_NAME}"
 
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-      # Session dead — check hook
-      HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-        | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+      # Session dead — check if it has hooked work
+      HOOK_BEAD=$(bd show "$RIG/polecats/$PCAT_NAME" --json 2>/dev/null \
+        | jq -r '.hook_bead // empty' 2>/dev/null)
 
       if [ -n "$HOOK_BEAD" ]; then
-        # Check agent_state
-        AGENT_STATE=$(bd show "$HOOK_BEAD" --json 2>/dev/null \
-          | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('status',''))" 2>/dev/null || echo "")
-
-        case "$AGENT_STATE" in
-          closed) log "  SKIP $SESSION_NAME: bead closed (completed normally)"; continue ;;
-        esac
+        # Check agent_state to avoid false alerts for intentional shutdowns
+        AGENT_STATE=$(bd show "$RIG/polecats/$PCAT_NAME" --json 2>/dev/null \
+          | jq -r '.agent_state // empty' 2>/dev/null)
+        if [ "$AGENT_STATE" = "spawning" ]; then
+          log "  SKIP $SESSION_NAME: agent_state=spawning (sling in progress)"
+          continue
+        fi
+        if [ "$AGENT_STATE" = "done" ] || [ "$AGENT_STATE" = "nuked" ]; then
+          log "  SKIP $SESSION_NAME: agent_state=$AGENT_STATE (intentional shutdown)"
+          continue
+        fi
 
         CRASHED+=("$SESSION_NAME|$RIG|$PCAT_NAME|$HOOK_BEAD")
         log "  CRASHED: $SESSION_NAME (hook=$HOOK_BEAD)"
       fi
     else
-      # Session alive — check process
+      # Session alive — check for agent process liveness
       PANE_PID=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_pid}' 2>/dev/null | head -1)
       if [ -n "$PANE_PID" ]; then
-        PROC_COMM=$(ps -o comm= -p "$PANE_PID" 2>/dev/null)
-        if [ -z "$PROC_COMM" ]; then
-          # Zombie: process dead, session alive
-          HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-            | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+        AGENT_ALIVE=$(pgrep -P "$PANE_PID" -f 'claude|node|anthropic' 2>/dev/null | head -1)
+        if [ -z "$AGENT_ALIVE" ]; then
+          # Agent process dead but session alive — zombie session
+          HOOK_BEAD=$(bd show "$RIG/polecats/$PCAT_NAME" --json 2>/dev/null \
+            | jq -r '.hook_bead // empty' 2>/dev/null)
           if [ -n "$HOOK_BEAD" ]; then
             STUCK+=("$SESSION_NAME|$RIG|$PCAT_NAME|$HOOK_BEAD|agent_dead")
-            log "  ZOMBIE: $SESSION_NAME (pid=$PANE_PID dead, hook=$HOOK_BEAD)"
+            log "  ZOMBIE: $SESSION_NAME (agent dead, session alive, hook=$HOOK_BEAD)"
           fi
         else
           HEALTHY=$((HEALTHY + 1))
@@ -98,31 +102,23 @@ if ! tmux has-session -t "$DEACON_SESSION" 2>/dev/null; then
   log "  CRASHED: Deacon session is dead"
   DEACON_ISSUE="crashed"
 else
-  DEACON_PID=$(tmux list-panes -t "$DEACON_SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
-  DEACON_COMM=$(ps -o comm= -p "$DEACON_PID" 2>/dev/null)
-  if [ -z "$DEACON_COMM" ]; then
-    log "  ZOMBIE: Deacon process dead (pid=$DEACON_PID), session alive"
-    DEACON_ISSUE="zombie"
-  else
-    log "  Process alive: pid=$DEACON_PID comm=$DEACON_COMM"
-  fi
-
-  HEARTBEAT_FILE="$TOWN_ROOT/deacon/.deacon-heartbeat"
+  # heartbeat.json is the canonical file written by `gt deacon heartbeat`.
+  # Threshold: 1200s (20m) — deacon patrol cycles take up to ~15m with writes at
+  # start and mid-cycle, so max gap is ~9m. 20m avoids false positives.
+  HEARTBEAT_FILE="$TOWN_ROOT/deacon/heartbeat.json"
   if [ -f "$HEARTBEAT_FILE" ]; then
-    if [ "$(uname)" = "Darwin" ]; then
-      HEARTBEAT_TIME=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null)
-    else
-      HEARTBEAT_TIME=$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null)
-    fi
+    HEARTBEAT_TIME=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null)
     NOW=$(date +%s)
     HEARTBEAT_AGE=$(( NOW - HEARTBEAT_TIME ))
 
-    if [ "$HEARTBEAT_AGE" -gt 600 ]; then
-      log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old)"
+    if [ "$HEARTBEAT_AGE" -gt 1200 ]; then
+      log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old, >20m threshold)"
       DEACON_ISSUE="stuck_heartbeat_${HEARTBEAT_AGE}s"
     else
       log "  OK: Deacon heartbeat ${HEARTBEAT_AGE}s old"
     fi
+  else
+    log "  WARN: No heartbeat file found at $HEARTBEAT_FILE"
   fi
 fi
 

@@ -21,7 +21,7 @@ if [ ! -f "$RIGS_JSON_PATH" ]; then
 fi
 
 # Build rig_name|prefix mapping
-RIG_PREFIX_MAP=$(jq -r '.rigs | to_entries[] | "\(.key)|\(.value.beads.prefix // .key)"' "$RIGS_JSON_PATH" 2>/dev/null)
+RIG_PREFIX_MAP=$(jq -r '.rigs | to_entries[] | "\(.key)|\(.value.beads.prefix // .key)"' "$RIGS_JSON_PATH" 2>/dev/null || true)
 if [ -z "$RIG_PREFIX_MAP" ]; then
   log "SKIP: no rigs in rigs.json"
   exit 0
@@ -46,7 +46,7 @@ while IFS='|' read -r RIG PREFIX; do
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
       # Session dead — check hook
       HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-        | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+        | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //' || true)
 
       if [ -n "$HOOK_BEAD" ]; then
         # Check agent_state
@@ -62,13 +62,13 @@ while IFS='|' read -r RIG PREFIX; do
       fi
     else
       # Session alive — check process
-      PANE_PID=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_pid}' 2>/dev/null | head -1)
+      PANE_PID=$(tmux list-panes -t "$SESSION_NAME" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
       if [ -n "$PANE_PID" ]; then
-        PROC_COMM=$(ps -o comm= -p "$PANE_PID" 2>/dev/null)
+        PROC_COMM=$(ps -o comm= -p "$PANE_PID" 2>/dev/null || true)
         if [ -z "$PROC_COMM" ]; then
           # Zombie: process dead, session alive
           HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-            | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+            | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //' || true)
           if [ -n "$HOOK_BEAD" ]; then
             STUCK+=("$SESSION_NAME|$RIG|$PCAT_NAME|$HOOK_BEAD|agent_dead")
             log "  ZOMBIE: $SESSION_NAME (pid=$PANE_PID dead, hook=$HOOK_BEAD)"
@@ -98,8 +98,8 @@ if ! tmux has-session -t "$DEACON_SESSION" 2>/dev/null; then
   log "  CRASHED: Deacon session is dead"
   DEACON_ISSUE="crashed"
 else
-  DEACON_PID=$(tmux list-panes -t "$DEACON_SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
-  DEACON_COMM=$(ps -o comm= -p "$DEACON_PID" 2>/dev/null)
+  DEACON_PID=$(tmux list-panes -t "$DEACON_SESSION" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
+  DEACON_COMM=$(ps -o comm= -p "$DEACON_PID" 2>/dev/null || true)
   if [ -z "$DEACON_COMM" ]; then
     log "  ZOMBIE: Deacon process dead (pid=$DEACON_PID), session alive"
     DEACON_ISSUE="zombie"
@@ -110,12 +110,12 @@ else
   HEARTBEAT_FILE="$TOWN_ROOT/deacon/.deacon-heartbeat"
   if [ -f "$HEARTBEAT_FILE" ]; then
     if [ "$(uname)" = "Darwin" ]; then
-      HEARTBEAT_TIME=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null)
+      HEARTBEAT_TIME=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || true)
     else
-      HEARTBEAT_TIME=$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null)
+      HEARTBEAT_TIME=$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || true)
     fi
     NOW=$(date +%s)
-    HEARTBEAT_AGE=$(( NOW - HEARTBEAT_TIME ))
+    HEARTBEAT_AGE=$(( NOW - ${HEARTBEAT_TIME:-0} ))
 
     if [ "$HEARTBEAT_AGE" -gt 600 ]; then
       log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old)"

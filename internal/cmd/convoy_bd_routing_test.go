@@ -93,6 +93,11 @@ func TestRunConvoyList_UsesTownRootAndStripsBeadsDir(t *testing.T) {
 	t.Setenv("BEADS_DIR", "/wrong/.beads")
 
 	scriptBody := fmt.Sprintf(`
+# Allow-stale version probe is exempt from BEADS_DIR check.
+if [ "$*" = "--allow-stale version" ]; then
+  exit 0
+fi
+
 if [ -n "$BEADS_DIR" ]; then
   echo "BEADS_DIR leaked: $BEADS_DIR" >&2
   exit 1
@@ -161,6 +166,11 @@ func TestRunConvoyStatus_UsesTownRootAndStripsBeadsDir(t *testing.T) {
 	t.Setenv("BEADS_DIR", "/wrong/.beads")
 
 	scriptBody := fmt.Sprintf(`
+# Allow-stale version probe is exempt from BEADS_DIR check.
+if [ "$*" = "--allow-stale version" ]; then
+  exit 0
+fi
+
 if [ -n "$BEADS_DIR" ]; then
   echo "BEADS_DIR leaked: $BEADS_DIR" >&2
   exit 1
@@ -204,11 +214,9 @@ esac
 	}
 }
 
-// TestConvoyCreate_DepAddUsesTownRoot verifies that `dep add` during convoy
-// create runs from the town root (not its parent), so bd's prefix routing
-// can resolve cross-rig beads via routes.jsonl. This was the root cause of
-// "no beads database found" when tracking beads from other rigs. (GH#2960)
-func TestConvoyCreate_DepAddUsesTownRoot(t *testing.T) {
+// TestConvoyCreate_UsesTrackingHelper verifies convoy create delegates tracking
+// to the in-process helper instead of shelling out to `bd dep add`.
+func TestConvoyCreate_UsesTrackingHelper(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows - shell stubs")
 	}
@@ -223,21 +231,20 @@ func TestConvoyCreate_DepAddUsesTownRoot(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(beadsDir, ".gt-types-configured"), []byte(typesList), 0644)
 	_ = os.WriteFile(filepath.Join(beadsDir, ".gt-statuses-configured"), []byte("staged_ready,staged_warnings"), 0644)
 
-	// Track which directory dep add runs from.
-	depLogPath := filepath.Join(t.TempDir(), "dep-add.log")
+	var helperTownRoot, helperConvoyID, helperIssueID string
+	oldAddTracking := addTrackingRelationFn
+	addTrackingRelationFn = func(townRoot, convoyID, issueID string) error {
+		helperTownRoot = townRoot
+		helperConvoyID = convoyID
+		helperIssueID = issueID
+		return nil
+	}
+	t.Cleanup(func() { addTrackingRelationFn = oldAddTracking })
 
-	scriptBody := fmt.Sprintf(`
+	scriptBody := `
 case "$1" in
   create)
     echo '[{"id":"hq-cv-test"}]'
-    ;;
-  dep)
-    # Log the working directory for dep add calls
-    echo "$PWD" >> %s
-    if [ "$PWD" != "%s" ]; then
-      echo "dep add: expected town root %s, got $PWD" >&2
-      exit 1
-    fi
     ;;
   init|config)
     exit 0
@@ -246,7 +253,7 @@ case "$1" in
     echo '[]'
     ;;
 esac
-`, depLogPath, expectedWD, expectedWD)
+`
 	writeRoutingBdStub(t, scriptBody)
 
 	// Override the entropy source for deterministic convoy IDs.
@@ -261,13 +268,67 @@ esac
 		t.Fatalf("runConvoyCreate: %v", err)
 	}
 
-	// Verify dep add was called from the town root
-	logData, err := os.ReadFile(depLogPath)
-	if err != nil {
-		t.Fatalf("dep add was never called (no log file): %v", err)
+	if helperTownRoot != expectedWD {
+		t.Errorf("tracking helper townRoot = %q, want %q", helperTownRoot, expectedWD)
 	}
-	logged := strings.TrimSpace(string(logData))
-	if logged != expectedWD {
-		t.Errorf("dep add ran from %q, want town root %q", logged, expectedWD)
+	if helperConvoyID != "hq-cv-pqrst" {
+		t.Errorf("tracking helper convoyID = %q, want %q", helperConvoyID, "hq-cv-pqrst")
+	}
+	if helperIssueID != "mo-2sh.1" {
+		t.Errorf("tracking helper issueID = %q, want %q", helperIssueID, "mo-2sh.1")
+	}
+}
+
+func TestConvoyAdd_UsesTrackingHelper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows - shell stubs")
+	}
+
+	townRoot, expectedWD := makeRoutingTownWorkspace(t)
+	chdirConvoyTest(t, townRoot)
+
+	var helperTownRoot, helperConvoyID string
+	var helperIssues []string
+	oldAddTracking := addTrackingRelationFn
+	addTrackingRelationFn = func(townRoot, convoyID, issueID string) error {
+		helperTownRoot = townRoot
+		helperConvoyID = convoyID
+		helperIssues = append(helperIssues, issueID)
+		return nil
+	}
+	t.Cleanup(func() { addTrackingRelationFn = oldAddTracking })
+
+	scriptBody := fmt.Sprintf(`
+case "$*" in
+  "show hq-cv-test --json")
+    if [ "$PWD" != "%s" ]; then
+      echo "expected town root, got $PWD" >&2
+      exit 1
+    fi
+    echo '[{"id":"hq-cv-test","title":"Test Convoy","status":"open","issue_type":"convoy"}]'
+    ;;
+  *)
+    echo "unexpected bd args: $*" >&2
+    exit 1
+    ;;
+esac
+`, expectedWD)
+	writeRoutingBdStub(t, scriptBody)
+
+	_, err := captureConvoyStdoutErr(t, func() error {
+		return runConvoyAdd(nil, []string{"hq-cv-test", "ag-95s.1", "ag-95s.2"})
+	})
+	if err != nil {
+		t.Fatalf("runConvoyAdd: %v", err)
+	}
+
+	if helperTownRoot != expectedWD {
+		t.Errorf("tracking helper townRoot = %q, want %q", helperTownRoot, expectedWD)
+	}
+	if helperConvoyID != "hq-cv-test" {
+		t.Errorf("tracking helper convoyID = %q, want %q", helperConvoyID, "hq-cv-test")
+	}
+	if got := strings.Join(helperIssues, ","); got != "ag-95s.1,ag-95s.2" {
+		t.Errorf("tracking helper issues = %q, want %q", got, "ag-95s.1,ag-95s.2")
 	}
 }

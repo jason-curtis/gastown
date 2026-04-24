@@ -377,8 +377,8 @@ func TestParsePluginMD_GitHubSheriff(t *testing.T) {
 	if plugin.Gate.Type != GateCooldown {
 		t.Errorf("expected gate type 'cooldown', got %q", plugin.Gate.Type)
 	}
-	if plugin.Gate.Duration != "5m" {
-		t.Errorf("expected gate duration '5m', got %q", plugin.Gate.Duration)
+	if plugin.Gate.Duration != "2h" {
+		t.Errorf("expected gate duration '2h', got %q", plugin.Gate.Duration)
 	}
 	if plugin.Tracking == nil {
 		t.Fatal("expected tracking to be non-nil")
@@ -397,6 +397,46 @@ func TestParsePluginMD_GitHubSheriff(t *testing.T) {
 	}
 	if plugin.Instructions == "" {
 		t.Error("expected non-empty instructions")
+	}
+}
+
+func TestParsePluginMD_StuckAgentDogUsesCanonicalHeartbeatPath(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "plugins", "stuck-agent-dog", "plugin.md"))
+	if err != nil {
+		t.Skipf("stuck-agent-dog plugin not found (expected in plugins/): %v", err)
+	}
+
+	plugin, err := parsePluginMD(content, "/test/stuck-agent-dog", LocationRig, "gastown")
+	if err != nil {
+		t.Fatalf("parsePluginMD failed: %v", err)
+	}
+
+	if plugin.Name != "stuck-agent-dog" {
+		t.Fatalf("expected name 'stuck-agent-dog', got %q", plugin.Name)
+	}
+	if !strings.Contains(plugin.Instructions, "deacon/heartbeat.json") {
+		t.Fatalf("expected canonical heartbeat path in instructions, got:\n%s", plugin.Instructions)
+	}
+	if strings.Contains(plugin.Instructions, ".deacon-heartbeat") {
+		t.Fatalf("did not expect legacy heartbeat path in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, "Fallback for older/runtime-copied layouts") {
+		t.Fatalf("expected rigs.json fallback guidance in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, "RIGS_JSON_PATH=\"${TOWN_ROOT}/rigs.json\"") {
+		t.Fatalf("expected town-root rigs.json as canonical source in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, "$TOWN_ROOT/mayor/rigs.json") {
+		t.Fatalf("expected mayor/ fallback in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, "Filter out any malformed/blank rows") {
+		t.Fatalf("expected fail-safe blank/malformed rigs row handling in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, "could not parse rigs.json") {
+		t.Fatalf("expected fail-safe rigs.json parse handling in instructions, got:\n%s", plugin.Instructions)
+	}
+	if !strings.Contains(plugin.Instructions, ">15m threshold") {
+		t.Fatalf("expected canonical deacon very-stale threshold in instructions, got:\n%s", plugin.Instructions)
 	}
 }
 

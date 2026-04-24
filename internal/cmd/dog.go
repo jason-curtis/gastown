@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"github.com/steveyegge/gastown/internal/plugin"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/util"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -284,7 +282,7 @@ func init() {
 	// Health-check flags
 	dogHealthCheckCmd.Flags().BoolVar(&dogHealthJSON, "json", false, "Output as JSON")
 	dogHealthCheckCmd.Flags().BoolVar(&dogHealthAutoClear, "auto-clear", false, "Auto-clear zombie dogs")
-	dogHealthCheckCmd.Flags().DurationVar(&dogHealthMaxInactivity, "max-inactivity", 30*time.Minute, "Max inactivity before considering hung")
+	dogHealthCheckCmd.Flags().DurationVar(&dogHealthMaxInactivity, "max-inactivity", 10*time.Minute, "Max inactivity before considering hung")
 
 	// Add subcommands
 	dogCmd.AddCommand(dogAddCmd)
@@ -671,6 +669,11 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting dog %s: %w", name, err)
 	}
 
+	// Always close accumulated plugin mails, even if dog is already idle.
+	// Plugin dispatch mails accumulate across sessions and must be cleaned up
+	// regardless of current work state.
+	closePluginMails(name)
+
 	if d.State == dog.StateIdle && d.Work == "" {
 		fmt.Printf("Dog %s is already idle with no work\n", name)
 		return nil
@@ -694,15 +697,20 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 	t := tmux.NewTmux()
 	_ = t.SetRemainOnExit(sessionID, false)
 	fmt.Printf("  Session %s will terminate in 3s\n", sessionID)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	killCmd := exec.CommandContext(ctx, "bash", "-c",
-		fmt.Sprintf("sleep 3 && tmux kill-session -t '%s' 2>/dev/null", sessionID))
-	util.SetProcessGroup(killCmd)
-	if err := killCmd.Start(); err != nil {
-		// Non-fatal: session may not be tmux-based (e.g., manual testing).
-		fmt.Fprintf(os.Stderr, "warning: failed to schedule session termination: %v\n", err)
-	}
+
+	// Kill the tmux session after a short delay using a goroutine.
+	// Previous approach used bash -c "sleep 3 && tmux kill-session" which
+	// fails silently on Windows. The goroutine is cross-platform and uses
+	// the tmux package which handles the socket name automatically.
+	go func() {
+		time.Sleep(3 * time.Second)
+		if err := t.KillSession(sessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to kill session %s: %v\n", sessionID, err)
+		}
+	}()
+
+	// Wait for the goroutine to finish (the process will exit after kill).
+	time.Sleep(4 * time.Second)
 
 	return nil
 }
@@ -715,6 +723,47 @@ func splitPathComponents(path string) []string {
 	return strings.FieldsFunc(path, func(r rune) bool {
 		return r == '/' || r == '\\'
 	})
+}
+
+// closePluginMails archives all open "Plugin: " dispatch mails from a dog's inbox.
+// Plugin dispatch mails sent by the daemon accumulate because gt dog done never
+// closed them. On every UserPromptSubmit hook, gt mail check --inject re-injects
+// ALL open mails, causing context to balloon. This function cleans up eagerly.
+// It is best-effort: failures are logged but do not prevent dog from going idle.
+func closePluginMails(dogName string) {
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		return // not in a Gas Town workspace, skip cleanup
+	}
+
+	dogAddress := fmt.Sprintf("deacon/dogs/%s", dogName)
+	router := mail.NewRouterWithTownRoot(townRoot, townRoot)
+	mailbox, err := router.GetMailbox(dogAddress)
+	if err != nil {
+		return
+	}
+
+	messages, err := mailbox.List()
+	if err != nil {
+		return
+	}
+
+	closed := 0
+	for _, msg := range messages {
+		if msg.Read {
+			continue
+		}
+		if !strings.HasPrefix(msg.Subject, "Plugin: ") {
+			continue
+		}
+		if archErr := mailbox.Archive(msg.ID); archErr == nil {
+			closed++
+		}
+	}
+
+	if closed > 0 {
+		fmt.Printf("  Closed %d stale plugin mail(s) from inbox\n", closed)
+	}
 }
 
 func runDogStatus(cmd *cobra.Command, args []string) error {

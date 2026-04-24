@@ -134,6 +134,34 @@ func TestAgentEnv_Dog(t *testing.T) {
 	assertNotSet(t, env, "GT_RIG")
 }
 
+// TestIdentityEnvVars_CoversAgentEnvOutput verifies that IdentityEnvVars contains
+// all identity-bearing keys that AgentEnv can produce. If AgentEnv gains a new
+// identity key, this test fails to remind you to add it to IdentityEnvVars.
+func TestIdentityEnvVars_CoversAgentEnvOutput(t *testing.T) {
+	t.Parallel()
+
+	// Collect all identity keys produced by AgentEnv across all role types.
+	// Identity keys are role/rig/agent-specific — NOT infrastructure keys like
+	// GT_ROOT, NODE_OPTIONS, CLAUDECODE, etc.
+	identityKeys := map[string]bool{
+		"GT_ROLE": true, "GT_RIG": true, "GT_CREW": true,
+		"GT_POLECAT": true, "GT_DOG_NAME": true, "GT_SESSION": true,
+		"GT_AGENT": true, "BD_ACTOR": true, "GIT_AUTHOR_NAME": true,
+		"BEADS_AGENT_NAME": true,
+	}
+
+	have := make(map[string]bool, len(IdentityEnvVars))
+	for _, k := range IdentityEnvVars {
+		have[k] = true
+	}
+
+	for k := range identityKeys {
+		if !have[k] {
+			t.Errorf("IdentityEnvVars is missing %q — add it to prevent identity leakage (GH#3006)", k)
+		}
+	}
+}
+
 func TestAgentEnv_WithRuntimeConfigDir(t *testing.T) {
 	t.Parallel()
 	env := AgentEnv(AgentEnvConfig{
@@ -736,6 +764,22 @@ func TestSanitizeAgentEnv_ClearsClaudeCode(t *testing.T) {
 	}
 }
 
+func TestAgentEnv_ExcludesAnthropicBaseURL(t *testing.T) {
+	// Not parallel — t.Setenv modifies process environment.
+
+	// Even when ANTHROPIC_BASE_URL is set in the process environment,
+	// AgentEnv must NOT forward it. Agents that need a custom base URL
+	// get it from their agent config's Env block (rc.Env), not inheritance.
+	// Passthrough caused cross-provider contamination: a MiniMax deacon's
+	// base URL leaked into Claude polecats, causing 401 auth failures.
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic")
+
+	env := AgentEnv(AgentEnvConfig{Role: "polecat", Rig: "testrig", AgentName: "ember"})
+	if val, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		t.Errorf("AgentEnv should not forward ANTHROPIC_BASE_URL, got %q", val)
+	}
+}
+
 func TestAgentEnv_IncludesNodeOptionsClearing(t *testing.T) {
 	t.Parallel()
 	// Verify AgentEnv always includes NODE_OPTIONS="" regardless of role.
@@ -1252,4 +1296,39 @@ func TestClaudeConfigDir_EnvVar(t *testing.T) {
 	if got != customDir {
 		t.Errorf("ClaudeConfigDir() = %q, want %q", got, customDir)
 	}
+}
+
+func TestAgentEnv_EffortLevel(t *testing.T) {
+	t.Run("defaults to high when no config exists", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+		env := AgentEnv(AgentEnvConfig{
+			Role:     "crew",
+			TownRoot: "/tmp/nonexistent-town",
+		})
+		if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "high" {
+			t.Errorf("CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", got, "high")
+		}
+	})
+
+	t.Run("ignores shell env var", func(t *testing.T) {
+		// The env var is deprecated — config takes over, falling back to "high"
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
+		env := AgentEnv(AgentEnvConfig{
+			Role:     "crew",
+			TownRoot: "/tmp/nonexistent-town",
+		})
+		if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "high" {
+			t.Errorf("CLAUDE_CODE_EFFORT_LEVEL = %q, want %q (env var should be ignored)", got, "high")
+		}
+	})
+
+	t.Run("always sets the key", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "")
+		env := AgentEnv(AgentEnvConfig{
+			Role: "witness",
+		})
+		if _, ok := env["CLAUDE_CODE_EFFORT_LEVEL"]; !ok {
+			t.Error("CLAUDE_CODE_EFFORT_LEVEL should always be set")
+		}
+	})
 }

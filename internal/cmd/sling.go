@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
@@ -99,7 +100,7 @@ The propulsion principle: if it's on your hook, YOU RUN IT.
 
 Batch Slinging:
   gt sling gt-abc gt-def gt-ghi gastown   # Sling multiple beads to a rig
-  gt sling gt-abc gt-def gastown --max-concurrent 3  # Limit concurrent spawns
+  gt sling gt-abc gt-def gastown --max-concurrent 3  # Spawn 3 at a time
 
   When multiple beads are provided with a rig target, each bead gets its own
   polecat. This parallelizes work dispatch without running gt sling N times.
@@ -128,11 +129,12 @@ var (
 	slingNoMerge       bool   // --no-merge: skip merge queue on completion (for upstream PRs/human review)
 	slingMerge         string // --merge: merge strategy for convoy (direct/mr/local)
 	slingNoBoot        bool   // --no-boot: skip wakeRigAgents (avoid witness/refinery boot and lock contention)
-	slingMaxConcurrent int    // --max-concurrent: limit concurrent spawns in batch mode
+	slingMaxConcurrent int    // --max-concurrent: throttle spawn rate in batch mode (spawns N, pauses, spawns N more)
 	slingBaseBranch    string // --base-branch: override base branch for polecat worktree
 	slingRalph         bool   // --ralph: enable Ralph Wiggum loop mode for multi-step workflows
 	slingFormula       string // --formula: override formula for dispatch (default: mol-polecat-work)
 	slingCrew          string // --crew: target a crew member in the specified rig
+	slingReviewOnly    bool   // --review-only: mark work as review-only (no merge/commit/push)
 )
 
 func init() {
@@ -155,11 +157,12 @@ func init() {
 	slingCmd.Flags().BoolVar(&slingNoMerge, "no-merge", false, "Skip merge queue on completion (keep work on feature branch for review)")
 	slingCmd.Flags().StringVar(&slingMerge, "merge", "", "Merge strategy: direct (push to main), mr (merge queue, default), local (keep on branch)")
 	slingCmd.Flags().BoolVar(&slingNoBoot, "no-boot", false, "Skip rig boot after polecat spawn (avoids witness/refinery lock contention)")
-	slingCmd.Flags().IntVar(&slingMaxConcurrent, "max-concurrent", 0, "Limit concurrent polecat spawns in batch mode (0 = no limit)")
+	slingCmd.Flags().IntVar(&slingMaxConcurrent, "max-concurrent", 0, "Throttle spawn rate: spawn N polecats, pause, then spawn N more (0 = no throttle). Does not limit total concurrent polecats")
 	slingCmd.Flags().StringVar(&slingBaseBranch, "base-branch", "", "Override base branch for polecat worktree (e.g., 'develop', 'release/v2')")
 	slingCmd.Flags().BoolVar(&slingRalph, "ralph", false, "Enable Ralph Wiggum loop mode (fresh context per step, for multi-step workflows)")
 	slingCmd.Flags().StringVar(&slingFormula, "formula", "", "Formula to apply (default: mol-polecat-work for polecat targets)")
 	slingCmd.Flags().StringVar(&slingCrew, "crew", "", "Target a crew member in the specified rig (e.g., --crew mel with target gastown → gastown/crew/mel)")
+	slingCmd.Flags().BoolVar(&slingReviewOnly, "review-only", false, "Mark work as review-only: assignee evaluates and reports back, must NOT merge/commit/push")
 
 	slingCmd.AddCommand(slingRespawnResetCmd)
 	rootCmd.AddCommand(slingCmd)
@@ -358,6 +361,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				DryRun:      slingDryRun,
 				Force:       slingForce,
 				NoMerge:     slingNoMerge,
+				ReviewOnly:  slingReviewOnly,
 				Account:     slingAccount,
 				Agent:       slingAgent,
 				HookRawBead: slingHookRawBead,
@@ -397,6 +401,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 			DryRun:      slingDryRun,
 			Force:       slingForce,
 			NoMerge:     slingNoMerge,
+				ReviewOnly:  slingReviewOnly,
 			Account:     slingAccount,
 			Agent:       slingAgent,
 			HookRawBead: slingHookRawBead,
@@ -433,6 +438,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 				DryRun:      slingDryRun,
 				Force:       slingForce,
 				NoMerge:     slingNoMerge,
+				ReviewOnly:  slingReviewOnly,
 				Account:     slingAccount,
 				Agent:       slingAgent,
 				HookRawBead: slingHookRawBead,
@@ -892,6 +898,15 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 
 	// Hook the bead with retry and verification.
 	// See: https://github.com/steveyegge/gastown/issues/148
+	//
+	// Acquire a per-assignee lock before writing hook_bead to serialize concurrent slings
+	// targeting the same polecat. Without this, multiple concurrent slings race on the
+	// same assignee's row in Dolt, causing silent rollbacks (issue #3114).
+	assigneeUnlock, assigneeLockErr := tryAcquireSlingAssigneeLock(townRoot, targetAgent)
+	if assigneeLockErr != nil {
+		return fmt.Errorf("serializing hook write for %s: %w", targetAgent, assigneeLockErr)
+	}
+	defer assigneeUnlock()
 	hookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
 	if err := hookBeadWithRetry(beadID, targetAgent, hookDir); err != nil {
 		return err
@@ -935,6 +950,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		AttachedMolecule: attachedMoleculeID,
 		AttachedFormula:  formulaName,
 		NoMerge:          slingNoMerge,
+		ReviewOnly:       slingReviewOnly,
 		FormulaVars:      strings.Join(slingVars, "\n"),
 	}
 	if err := storeFieldsInBead(beadID, fieldUpdates); err != nil {
@@ -946,6 +962,9 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 		if slingNoMerge {
 			fmt.Printf("%s No-merge mode enabled (work stays on feature branch)\n", style.Bold.Render("✓"))
+		}
+		if slingReviewOnly {
+			fmt.Printf("%s Review-only mode: assignee must evaluate and report back, NOT merge/commit/push\n", style.Bold.Render("⚠"))
 		}
 	}
 
@@ -1082,6 +1101,42 @@ func tryAcquireSlingBeadLock(townRoot, beadID string) (func(), error) {
 	}
 
 	return release, nil
+}
+
+// tryAcquireSlingAssigneeLock acquires a per-assignee file lock to serialize concurrent
+// hook writes to the same polecat. The per-bead lock (tryAcquireSlingBeadLock) prevents
+// double-sling of the same bead, but does not prevent concurrent slings from racing on
+// the same assignee's hook_bead field in Dolt. This lock is held only during
+// hookBeadWithRetry. Uses non-blocking try-acquire with retry and timeout to avoid
+// indefinite blocking if a sling gets stuck.
+// See: https://github.com/steveyegge/gastown/issues/3114
+func tryAcquireSlingAssigneeLock(townRoot, targetAgent string) (func(), error) {
+	lockDir := filepath.Join(townRoot, ".runtime", "locks", "sling")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating sling lock dir: %w", err)
+	}
+
+	safeAgent := strings.NewReplacer("/", "_", ":", "_").Replace(targetAgent)
+	lockPath := filepath.Join(lockDir, "assignee_"+safeAgent+".flock")
+
+	// Try non-blocking acquire with retry. hookBeadWithRetry itself has 10 retries
+	// with up to 30s backoff, so we allow generous total wait time for the lock.
+	const maxAttempts = 20
+	const retryInterval = 500 // milliseconds
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		release, locked, err := lock.FlockTryAcquire(lockPath)
+		if err != nil {
+			return nil, fmt.Errorf("acquiring assignee sling lock for %s: %w", targetAgent, err)
+		}
+		if locked {
+			return release, nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(retryInterval) * time.Millisecond)
+		}
+	}
+
+	return nil, fmt.Errorf("timed out acquiring assignee sling lock for %s after %ds (another sling may be stuck)", targetAgent, maxAttempts*retryInterval/1000)
 }
 
 // rollbackSlingArtifacts cleans up artifacts left by a partial sling when session start fails.

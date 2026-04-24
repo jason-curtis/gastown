@@ -193,6 +193,33 @@ func GetPrefixForRig(townRoot, rigName string) string {
 	return config.GetRigPrefix(townRoot, rigName)
 }
 
+// CheckPrefixAvailable verifies that a prefix is not already used by a different rig.
+// The prefix should include the trailing hyphen (e.g., "gt-").
+// newPath is the path of the rig being added (e.g., "gastown" or "gastown/mayor/rig").
+// Returns nil if the prefix is available or already maps to the same rig.
+func CheckPrefixAvailable(townRoot string, prefix string, newPath string) error {
+	beadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := LoadRoutes(beadsDir)
+	if err != nil {
+		return fmt.Errorf("loading routes: %w", err)
+	}
+
+	// Extract the rig name (first path component) for comparison,
+	// since the same rig can have different path variants (e.g., "gastown" vs "gastown/mayor/rig").
+	newRig := strings.SplitN(newPath, "/", 2)[0]
+
+	for _, r := range routes {
+		if r.Prefix == prefix {
+			existingRig := strings.SplitN(r.Path, "/", 2)[0]
+			if existingRig != newRig {
+				return fmt.Errorf("prefix %q is already used by %s (path: %s); use --prefix to specify a different prefix", prefix, existingRig, r.Path)
+			}
+		}
+	}
+
+	return nil
+}
+
 // FindConflictingPrefixes checks for duplicate prefixes in routes.
 // Returns a map of prefix -> list of paths that use it.
 func FindConflictingPrefixes(beadsDir string) (map[string][]string, error) {
@@ -258,6 +285,28 @@ func GetRigPathForPrefix(townRoot, prefix string) string {
 	return ""
 }
 
+// GetRigDirForName returns the rig directory path for a named rig.
+// The rig directory is the parent of the rig's .beads database and is the
+// value expected by bd create --repo. Returns empty string if the rig is not
+// found in routes or is town-level (path=".").
+func GetRigDirForName(townRoot, rigName string) string {
+	beadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := LoadRoutes(beadsDir)
+	if err != nil || routes == nil {
+		return ""
+	}
+	for _, r := range routes {
+		if r.Path == "." {
+			continue // town-level, not a specific rig dir
+		}
+		parts := strings.SplitN(r.Path, "/", 2)
+		if len(parts) > 0 && parts[0] == rigName {
+			return filepath.Join(townRoot, r.Path)
+		}
+	}
+	return ""
+}
+
 // GetRigNameForPrefix returns the rig name that owns a given bead prefix.
 // For example, "gt-" returns "gastown", "bd-" returns "beads".
 // Returns empty string if the prefix is town-level (path=".") or not found in routes.
@@ -313,6 +362,26 @@ func ResolveBeadsDirForID(currentBeadsDir, beadID string) string {
 	}
 
 	return currentBeadsDir
+}
+
+// ValidateRigPrefix checks that a newly created bead landed in the expected rig's
+// database (gt-gpy). This is a POST-creation guard: the bead already exists, so
+// callers MUST treat a non-nil return as a warning, not a hard failure.
+//
+// A mismatch means the bead's prefix doesn't match the expected rig prefix, which
+// typically indicates the bd create routing resolved to the town-level database
+// instead of the rig's database. Callers should log the warning and continue.
+func ValidateRigPrefix(townRoot, rigName, beadID string) error {
+	expectedPrefix := GetPrefixForRig(townRoot, rigName) // e.g., "gt"
+	actualPrefix := strings.TrimSuffix(ExtractPrefix(beadID), "-") // e.g., "gt"
+	if actualPrefix == "" {
+		return nil // Can't determine prefix — not an error
+	}
+	if actualPrefix != expectedPrefix {
+		return fmt.Errorf("bead %s has prefix %q but rig %q expects prefix %q — bead may have landed in wrong database",
+			beadID, actualPrefix, rigName, expectedPrefix)
+	}
+	return nil
 }
 
 // ResolveHookDir determines the directory for running bd update on a bead.

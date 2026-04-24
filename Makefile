@@ -1,4 +1,4 @@
-.PHONY: build desktop-build desktop-run install safe-install check-forward-only clean test test-e2e-container check-up-to-date
+.PHONY: build desktop-build desktop-run install safe-install check-forward-only check-version-tag clean test test-e2e-container check-up-to-date
 
 BINARY := gt
 BINARY_DESKTOP := gt-desktop
@@ -15,7 +15,8 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-LDFLAGS := -X github.com/steveyegge/gastown/internal/cmd.Version=$(VERSION) \
+LDFLAGS := -s -w \
+           -X github.com/steveyegge/gastown/internal/cmd.Version=$(VERSION) \
            -X github.com/steveyegge/gastown/internal/cmd.Commit=$(COMMIT) \
            -X github.com/steveyegge/gastown/internal/cmd.BuildTime=$(BUILD_TIME) \
            -X github.com/steveyegge/gastown/internal/cmd.BuiltProperly=1
@@ -35,21 +36,9 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-server ./cmd/gt-proxy-server
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-proxy-client ./cmd/gt-proxy-client
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/gt
-ifeq ($(shell uname),Darwin)
-	@codesign -s - -f $(BUILD_DIR)/$(BINARY)-proxy-server 2>/dev/null || true
-	@echo "Signed $(BINARY)-proxy-server for macOS"
-	@codesign -s - -f $(BUILD_DIR)/$(BINARY)-proxy-client 2>/dev/null || true
-	@echo "Signed $(BINARY)-proxy-client for macOS"
-	@codesign -s - -f $(BUILD_DIR)/$(BINARY) 2>/dev/null || true
-	@echo "Signed $(BINARY) for macOS"
-endif
 
 desktop-build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_DESKTOP) ./cmd/gt-desktop
-ifeq ($(shell uname),Darwin)
-	@codesign -s - -f $(BUILD_DIR)/$(BINARY_DESKTOP) 2>/dev/null || true
-	@echo "Signed $(BINARY_DESKTOP) for macOS"
-endif
 
 desktop-run:
 	go run ./cmd/gt-desktop
@@ -58,13 +47,21 @@ check-up-to-date:
 ifndef SKIP_UPDATE_CHECK
 	@# Skip check on detached HEAD (tag checkouts, CI builds)
 	@if ! git symbolic-ref HEAD >/dev/null 2>&1; then exit 0; fi
-	@git fetch origin main --quiet 2>/dev/null || true
-	@LOCAL=$$(git rev-parse HEAD 2>/dev/null); \
-	REMOTE=$$(git rev-parse origin/main 2>/dev/null); \
+	@# Use the current branch's tracking ref (works for main, carry/operational, etc.)
+	@UPSTREAM=$$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null); \
+	if [ -z "$$UPSTREAM" ]; then \
+		echo "Warning: no upstream tracking branch set, skipping update check"; \
+		exit 0; \
+	fi; \
+	REMOTE_NAME=$$(echo "$$UPSTREAM" | cut -d/ -f1); \
+	REMOTE_BRANCH=$$(echo "$$UPSTREAM" | cut -d/ -f2-); \
+	git fetch "$$REMOTE_NAME" "$$REMOTE_BRANCH" --quiet 2>/dev/null || true; \
+	LOCAL=$$(git rev-parse HEAD 2>/dev/null); \
+	REMOTE=$$(git rev-parse "$$UPSTREAM" 2>/dev/null); \
 	if [ -n "$$REMOTE" ] && [ "$$LOCAL" != "$$REMOTE" ]; then \
-		echo "ERROR: Local branch is not up to date with origin/main"; \
+		echo "ERROR: Local branch is not up to date with $$UPSTREAM"; \
 		echo "  Local:  $$(git rev-parse --short HEAD)"; \
-		echo "  Remote: $$(git rev-parse --short origin/main)"; \
+		echo "  Remote: $$(git rev-parse --short $$UPSTREAM)"; \
 		echo "Run 'git pull' first, or use SKIP_UPDATE_CHECK=1 to override"; \
 		exit 1; \
 	fi
@@ -138,6 +135,36 @@ safe-install: check-up-to-date check-forward-only build
 	done
 	@echo "Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY) (daemon NOT restarted)"
 	@echo "Sessions will pick up new binary on next cycle."
+
+# check-version-tag: Verify that if HEAD is tagged vX.Y.Z, the Version constant
+# in internal/cmd/version.go equals X.Y.Z. No-op when HEAD is untagged, so it is
+# safe to run on every build but only fails release tag checkouts.
+# Prevents recurrence of gh#3459 (v0.13.0 shipped reporting 0.12.1).
+check-version-tag:
+	@TAG=$$(git describe --tags --exact-match HEAD 2>/dev/null || true); \
+	if [ -z "$$TAG" ]; then \
+		echo "check-version-tag: HEAD is not a release tag, skipping"; \
+		exit 0; \
+	fi; \
+	case "$$TAG" in \
+		v[0-9]*) TAG_VERSION=$${TAG#v} ;; \
+		*) echo "check-version-tag: tag '$$TAG' is not a vX.Y.Z release tag, skipping"; exit 0 ;; \
+	esac; \
+	CODE_VERSION=$$(grep -E '^[[:space:]]*Version[[:space:]]*=[[:space:]]*"' internal/cmd/version.go | head -1 | sed 's/.*"\([^"]*\)".*/\1/'); \
+	if [ -z "$$CODE_VERSION" ]; then \
+		echo "ERROR: could not parse Version from internal/cmd/version.go"; \
+		exit 1; \
+	fi; \
+	if [ "$$TAG_VERSION" != "$$CODE_VERSION" ]; then \
+		echo "ERROR: version mismatch between git tag and Version constant"; \
+		echo "  git tag at HEAD:          $$TAG (expects Version=$$TAG_VERSION)"; \
+		echo "  internal/cmd/version.go:  Version=$$CODE_VERSION"; \
+		echo ""; \
+		echo "Run scripts/bump-version.sh before tagging, or re-tag HEAD correctly."; \
+		echo "See gh#3459 for background."; \
+		exit 1; \
+	fi; \
+	echo "check-version-tag: OK (tag $$TAG matches Version=$$CODE_VERSION)"
 
 clean:
 	rm -f $(BUILD_DIR)/$(BINARY)

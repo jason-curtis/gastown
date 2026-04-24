@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +79,15 @@ func convertToSSH(httpsURL string) string {
 		return "git@gitlab.com:" + path
 	}
 
+	// Handle Bitbucket: https://bitbucket.org/workspace/repo.git -> git@bitbucket.org:workspace/repo.git
+	if strings.HasPrefix(httpsURL, "https://bitbucket.org/") {
+		path := strings.TrimPrefix(httpsURL, "https://bitbucket.org/")
+		if !strings.HasSuffix(path, ".git") {
+			path += ".git"
+		}
+		return "git@bitbucket.org:" + path
+	}
+
 	return ""
 }
 
@@ -137,6 +148,10 @@ func (m *Manager) DiscoverRigs() ([]*Rig, error) {
 		}
 		rigs = append(rigs, rig)
 	}
+
+	slices.SortFunc(rigs, func(a, b *Rig) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
 
 	return rigs, nil
 }
@@ -244,16 +259,16 @@ func (m *Manager) loadRig(name string, entry config.RigEntry) (*Rig, error) {
 
 // AddRigOptions configures rig creation.
 type AddRigOptions struct {
-	Name            string   // Rig name (directory name)
-	GitURL          string   // Repository URL (fetch/pull)
-	PushURL         string   // Optional push URL (fork for read-only upstreams)
-	UpstreamURL     string   // Optional upstream URL (for fork workflows)
-	BeadsPrefix     string   // Beads issue prefix (defaults to derived from name)
-	LocalRepo       string   // Optional local repo for reference clones
-	DefaultBranch   string   // Default branch (defaults to auto-detected from remote)
-	SkipDoltCheck   bool     // Skip Dolt server availability check (for tests with mocked beads)
-	CloneFilter     string   // Git clone filter spec (e.g. "blob:none", "tree:0") for partial clones
-	SparseCheckout  []string // Sparse checkout paths (cone mode); empty means no sparse checkout
+	Name           string   // Rig name (directory name)
+	GitURL         string   // Repository URL (fetch/pull)
+	PushURL        string   // Optional push URL (fork for read-only upstreams)
+	UpstreamURL    string   // Optional upstream URL (for fork workflows)
+	BeadsPrefix    string   // Beads issue prefix (defaults to derived from name)
+	LocalRepo      string   // Optional local repo for reference clones
+	DefaultBranch  string   // Default branch (defaults to auto-detected from remote)
+	SkipDoltCheck  bool     // Skip Dolt server availability check (for tests with mocked beads)
+	CloneFilter    string   // Git clone filter spec (e.g. "blob:none", "tree:0") for partial clones
+	SparseCheckout []string // Sparse checkout paths (cone mode); empty means no sparse checkout
 }
 
 func resolveLocalRepo(path, gitURL string) (string, string) {
@@ -346,6 +361,11 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		opts.BeadsPrefix = deriveBeadsPrefix(opts.Name)
 	}
 
+	// Check for prefix collision with existing rigs before expensive operations.
+	if err := beads.CheckPrefixAvailable(m.townRoot, opts.BeadsPrefix+"-", opts.Name); err != nil {
+		return nil, fmt.Errorf("prefix collision (derived prefix %q): %w", opts.BeadsPrefix, err)
+	}
+
 	localRepo, warn := resolveLocalRepo(opts.LocalRepo, opts.GitURL)
 	if warn != "" {
 		fmt.Printf("  Warning: %s\n", warn)
@@ -388,30 +408,32 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Mayor remains a separate clone (doesn't need branch visibility).
 	fmt.Printf("  Cloning repository (this may take a moment)...\n")
 	bareRepoPath := filepath.Join(rigPath, ".repo.git")
-	if opts.CloneFilter != "" && localRepo != "" {
-		if err := m.git.CloneBarePartialWithReference(opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo); err != nil {
-			fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
-			_ = os.RemoveAll(bareRepoPath)
-			if err := m.git.CloneBarePartial(opts.GitURL, bareRepoPath, opts.CloneFilter); err != nil {
-				return nil, wrapCloneError(err, opts.GitURL)
+	// cloneBareWith selects the right CloneBare variant based on filter/reference/branch.
+	// When branch is non-empty, git clone --branch is passed so HEAD and the initial
+	// single-branch fetch both target the user-specified branch instead of the remote HEAD.
+	cloneBareWith := func(branch string) error {
+		if opts.CloneFilter != "" && localRepo != "" {
+			if err := m.git.CloneBarePartialWithReferenceAndBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, localRepo, branch); err != nil {
+				fmt.Printf("  Warning: could not use local repo reference with filter: %v\n", err)
+				_ = os.RemoveAll(bareRepoPath)
+				return m.git.CloneBarePartialWithBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
 			}
-		}
-	} else if opts.CloneFilter != "" {
-		if err := m.git.CloneBarePartial(opts.GitURL, bareRepoPath, opts.CloneFilter); err != nil {
-			return nil, wrapCloneError(err, opts.GitURL)
-		}
-	} else if localRepo != "" {
-		if err := m.git.CloneBareWithReference(opts.GitURL, bareRepoPath, localRepo); err != nil {
-			fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
-			_ = os.RemoveAll(bareRepoPath)
-			if err := m.git.CloneBare(opts.GitURL, bareRepoPath); err != nil {
-				return nil, wrapCloneError(err, opts.GitURL)
+			return nil
+		} else if opts.CloneFilter != "" {
+			return m.git.CloneBarePartialWithBranch(opts.GitURL, bareRepoPath, opts.CloneFilter, branch)
+		} else if localRepo != "" {
+			if err := m.git.CloneBareWithReferenceAndBranch(opts.GitURL, bareRepoPath, localRepo, branch); err != nil {
+				fmt.Printf("  Warning: could not use local repo reference: %v\n", err)
+				_ = os.RemoveAll(bareRepoPath)
+				return m.git.CloneBareWithBranch(opts.GitURL, bareRepoPath, branch)
 			}
+			return nil
 		}
-	} else {
-		if err := m.git.CloneBare(opts.GitURL, bareRepoPath); err != nil {
-			return nil, wrapCloneError(err, opts.GitURL)
-		}
+		return m.git.CloneBareWithBranch(opts.GitURL, bareRepoPath, branch)
+	}
+
+	if err := cloneBareWith(opts.DefaultBranch); err != nil {
+		return nil, wrapCloneError(err, opts.GitURL)
 	}
 	if opts.CloneFilter != "" {
 		fmt.Printf("   ✓ Created shared bare repo (partial: --filter=%s)\n", opts.CloneFilter)
@@ -852,6 +874,16 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 		// gt doctor --fix can repair this.
 		fmt.Fprintf(os.Stderr, "  ⚠ Identity verification warning: %v\n", err)
 		fmt.Fprintf(os.Stderr, "  Run 'gt doctor --fix' to repair if needed.\n")
+	}
+
+	// Persist rigs.json atomically before marking success.
+	// This ensures directory creation and rigs.json registration are an atomic unit:
+	// if the save fails, success remains false and the deferred cleanup removes the dir.
+	// Without this, a failure after AddRig returns (but before the caller saves) would
+	// leave a directory that is not registered in rigs.json.
+	rigsPath := filepath.Join(m.townRoot, "mayor", "rigs.json")
+	if err := config.SaveRigsConfig(rigsPath, m.config); err != nil {
+		return nil, fmt.Errorf("registering rig in rigs.json: %w", err)
 	}
 
 	success = true
@@ -1484,6 +1516,11 @@ func (m *Manager) RegisterRig(opts RegisterRigOptions) (*RegisterRigResult, erro
 	}
 	if opts.BeadsPrefix != "" {
 		result.BeadsPrefix = opts.BeadsPrefix
+	}
+
+	// Check for prefix collision with existing rigs.
+	if err := beads.CheckPrefixAvailable(m.townRoot, result.BeadsPrefix+"-", opts.Name); err != nil {
+		return nil, fmt.Errorf("prefix collision (prefix %q): %w", result.BeadsPrefix, err)
 	}
 
 	// Determine push URL: explicit option > existing config > auto-detect from remotes.

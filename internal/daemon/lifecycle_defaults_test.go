@@ -40,6 +40,13 @@ func TestDefaultLifecycleConfig(t *testing.T) {
 		t.Errorf("expected compactor_dog threshold 2000, got %d", p.CompactorDog.Threshold)
 	}
 
+	if p.CheckpointDog == nil || !p.CheckpointDog.Enabled {
+		t.Error("expected checkpoint_dog to be enabled")
+	}
+	if p.CheckpointDog.IntervalStr != "10m" {
+		t.Errorf("expected checkpoint_dog interval 10m, got %s", p.CheckpointDog.IntervalStr)
+	}
+
 	if p.DoctorDog == nil || !p.DoctorDog.Enabled {
 		t.Error("expected doctor_dog to be enabled")
 	}
@@ -64,6 +71,16 @@ func TestDefaultLifecycleConfig(t *testing.T) {
 	if p.ScheduledMaintenance.Threshold == nil || *p.ScheduledMaintenance.Threshold != 1000 {
 		t.Error("expected maintenance threshold 1000")
 	}
+
+	if p.MainBranchTest == nil || !p.MainBranchTest.Enabled {
+		t.Error("expected main_branch_test to be enabled")
+	}
+	if p.MainBranchTest.IntervalStr != "30m" {
+		t.Errorf("expected main_branch_test interval 30m, got %s", p.MainBranchTest.IntervalStr)
+	}
+	if p.MainBranchTest.TimeoutStr != "10m" {
+		t.Errorf("expected main_branch_test timeout 10m, got %s", p.MainBranchTest.TimeoutStr)
+	}
 }
 
 func TestEnsureLifecycleDefaults_NilConfig(t *testing.T) {
@@ -87,6 +104,9 @@ func TestEnsureLifecycleDefaults_EmptyConfig(t *testing.T) {
 	}
 	if config.Patrols.CompactorDog == nil || !config.Patrols.CompactorDog.Enabled {
 		t.Error("expected compactor_dog to be set")
+	}
+	if config.Patrols.CheckpointDog == nil || !config.Patrols.CheckpointDog.Enabled {
+		t.Error("expected checkpoint_dog to be set")
 	}
 	if config.Patrols.Handler == nil || !config.Patrols.Handler.Enabled {
 		t.Error("expected handler to be set")
@@ -139,10 +159,12 @@ func TestEnsureLifecycleDefaults_FullyConfigured(t *testing.T) {
 		Patrols: &PatrolsConfig{
 			WispReaper:           &WispReaperConfig{Enabled: false},
 			CompactorDog:         &CompactorDogConfig{Enabled: false},
+			CheckpointDog:        &CheckpointDogConfig{Enabled: false},
 			DoctorDog:            &DoctorDogConfig{Enabled: false},
 			JsonlGitBackup:       &JsonlGitBackupConfig{Enabled: false},
 			DoltBackup:           &DoltBackupConfig{Enabled: false},
 			ScheduledMaintenance: &ScheduledMaintenanceConfig{Enabled: false, Threshold: &threshold},
+			MainBranchTest:       &MainBranchTestConfig{Enabled: false},
 			Handler:              &PatrolConfig{Enabled: false},
 		},
 	}
@@ -313,6 +335,9 @@ func TestEnsureLifecycleConfigFile_ProductionScenario(t *testing.T) {
 	}
 	if config.Patrols.CompactorDog == nil || !config.Patrols.CompactorDog.Enabled {
 		t.Error("expected compactor_dog to be auto-populated and enabled")
+	}
+	if config.Patrols.CheckpointDog == nil || !config.Patrols.CheckpointDog.Enabled {
+		t.Error("expected checkpoint_dog to be auto-populated and enabled")
 	}
 	if config.Patrols.DoctorDog == nil || !config.Patrols.DoctorDog.Enabled {
 		t.Error("expected doctor_dog to be auto-populated and enabled")

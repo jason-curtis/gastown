@@ -404,6 +404,110 @@ func TestEngineer_LoadConfig_GateInvalidTimeout(t *testing.T) {
 	}
 }
 
+func TestEngineer_LoadConfig_GatePhase(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	config := map[string]interface{}{
+		"merge_queue": map[string]interface{}{
+			"gates": map[string]interface{}{
+				"lint": map[string]interface{}{
+					"cmd": "golangci-lint run",
+				},
+				"test": map[string]interface{}{
+					"cmd":   "go test ./...",
+					"phase": "pre-merge",
+				},
+				"build-check": map[string]interface{}{
+					"cmd":   "go build ./...",
+					"phase": "post-squash",
+				},
+			},
+		},
+	}
+
+	data, _ := json.MarshalIndent(config, "", "  ")
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "test-rig", Path: tmpDir}
+	e := NewEngineer(r)
+
+	if err := e.LoadConfig(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// lint has no phase — should default to pre-merge
+	if e.config.Gates["lint"].Phase != GatePhasePreMerge {
+		t.Errorf("lint phase = %q, want %q", e.config.Gates["lint"].Phase, GatePhasePreMerge)
+	}
+	if e.config.Gates["test"].Phase != GatePhasePreMerge {
+		t.Errorf("test phase = %q, want %q", e.config.Gates["test"].Phase, GatePhasePreMerge)
+	}
+	if e.config.Gates["build-check"].Phase != GatePhasePostSquash {
+		t.Errorf("build-check phase = %q, want %q", e.config.Gates["build-check"].Phase, GatePhasePostSquash)
+	}
+}
+
+func TestEngineer_LoadConfig_GateInvalidPhase(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	config := map[string]interface{}{
+		"merge_queue": map[string]interface{}{
+			"gates": map[string]interface{}{
+				"bad": map[string]interface{}{
+					"cmd":   "echo test",
+					"phase": "during-lunch",
+				},
+			},
+		},
+	}
+
+	data, _ := json.MarshalIndent(config, "", "  ")
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &rig.Rig{Name: "test-rig", Path: tmpDir}
+	e := NewEngineer(r)
+
+	err := e.LoadConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid phase")
+	}
+	if !strings.Contains(err.Error(), "invalid phase") {
+		t.Errorf("error = %q, want substring 'invalid phase'", err.Error())
+	}
+}
+
+func TestRunGatesForPhase_FiltersCorrectly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix shell commands")
+	}
+
+	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
+	e := NewEngineer(r)
+	e.workDir = t.TempDir()
+	e.output = io.Discard
+	e.config.Gates = map[string]*GateConfig{
+		"pre-lint":    {Cmd: "true", Phase: GatePhasePreMerge},
+		"pre-test":    {Cmd: "true", Phase: GatePhasePreMerge},
+		"post-build":  {Cmd: "true", Phase: GatePhasePostSquash},
+	}
+
+	// Pre-merge phase should only run pre-lint and pre-test
+	preResult := e.runGatesForPhase(context.Background(), GatePhasePreMerge)
+	if !preResult.Success {
+		t.Errorf("pre-merge gates failed: %s", preResult.Error)
+	}
+
+	// Post-squash phase should only run post-build
+	postResult := e.runGatesForPhase(context.Background(), GatePhasePostSquash)
+	if !postResult.Success {
+		t.Errorf("post-squash gates failed: %s", postResult.Error)
+	}
+}
+
 func TestRunGate_Success(t *testing.T) {
 	r := &rig.Rig{Name: "test-rig", Path: t.TempDir()}
 	e := NewEngineer(r)
@@ -653,6 +757,83 @@ func TestPostMergeConvoyCheck_NoTownBeads(t *testing.T) {
 	// Should produce no output (town .beads doesn't exist)
 	if buf.Len() != 0 {
 		t.Errorf("expected no output when town beads missing, got: %s", buf.String())
+	}
+}
+
+func TestCheckAndCloseCompletedConvoys_StripsBeadsDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows - shell stubs")
+	}
+
+	tmpDir := t.TempDir()
+	townBeads := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(townBeads, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	rigDir := filepath.Join(tmpDir, "l9")
+	if err := os.MkdirAll(rigDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	bdPath := filepath.Join(binDir, "bd")
+	script := `#!/bin/sh
+case "$*" in
+  "--allow-stale version")
+    exit 0
+    ;;
+  "--allow-stale list --type=convoy --status=open --json"|"list --type=convoy --status=open --json")
+    if [ -n "$BEADS_DIR" ]; then
+      echo "BEADS_DIR leaked: $BEADS_DIR" >&2
+      exit 1
+    fi
+    echo '[{"id":"hq-cv-l9","title":"Cross-rig convoy","status":"open","description":""}]'
+    ;;
+  "--allow-stale dep list hq-cv-l9 --direction=down --type=tracks --json"|"dep list hq-cv-l9 --direction=down --type=tracks --json")
+    if [ -n "$BEADS_DIR" ]; then
+      echo "BEADS_DIR leaked: $BEADS_DIR" >&2
+      exit 1
+    fi
+    echo '[{"id":"external:l9:l9-123","status":"closed"}]'
+    ;;
+  "--allow-stale show l9-123 --json"|"show l9-123 --json")
+    if [ -n "$BEADS_DIR" ]; then
+      echo "BEADS_DIR leaked: $BEADS_DIR" >&2
+      exit 1
+    fi
+    echo '[{"status":"closed"}]'
+    ;;
+  "--allow-stale close hq-cv-l9 -r All tracked issues completed"|"close hq-cv-l9 -r All tracked issues completed")
+    if [ -n "$BEADS_DIR" ]; then
+      echo "BEADS_DIR leaked: $BEADS_DIR" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    echo "unexpected bd args: $*" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BEADS_DIR", "/wrong/.beads")
+
+	e := NewEngineer(&rig.Rig{
+		Name: "l9",
+		Path: rigDir,
+	})
+
+	closed := e.checkAndCloseCompletedConvoys(tmpDir, townBeads)
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed convoy, got %d", len(closed))
+	}
+	if closed[0].ID != "hq-cv-l9" {
+		t.Fatalf("closed convoy ID = %q, want hq-cv-l9", closed[0].ID)
 	}
 }
 

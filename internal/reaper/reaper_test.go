@@ -2,6 +2,7 @@ package reaper
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,36 @@ func TestPurgeBatchQueryNoDatabaseNameInjection(t *testing.T) {
 	}
 }
 
+// TestIsNothingToCommit verifies that "nothing to commit" errors are recognized
+// correctly. This prevents false-positive dolt_commit_failed anomalies when the
+// reaper operates on dolt_ignored tables (wisps, wisp_*), where Dolt has nothing
+// to version after a successful SQL DELETE.
+func TestIsNothingToCommit(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"nothing to commit", true},
+		{"NOTHING TO COMMIT", true},
+		{"Error 1105 (HY000): nothing to commit", true},
+		{"no changes to commit", false}, // must also contain "commit" — see isNothingToCommit
+		{"no changes", false},
+		{"connection refused", false},
+		{"table not found: wisps", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		var err error
+		if c.msg != "" {
+			err = fmt.Errorf("%s", c.msg)
+		}
+		got := isNothingToCommit(err)
+		if got != c.want {
+			t.Errorf("isNothingToCommit(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }
@@ -182,15 +213,36 @@ func TestReapExcludesAgentBeads(t *testing.T) {
 	// by checking the source code pattern.
 	// This is a compile-time guard — if the exclusion is removed, this test
 	// will fail when the query pattern doesn't match.
-	
+
 	// The whereClause in Reap() should contain:
 	// "w.issue_type != 'agent'"
 	// This test documents the expected behavior; actual exclusion is tested
 	// in integration tests with a real database.
-	
+
 	// Integration test would require spinning up a Dolt server, which is
 	// beyond the scope of this unit test. The exclusion is verified manually
 	// by checking that agent beads are not closed by the wisp_reaper patrol.
 	t.Log("Agent beads (issue_type='agent') are excluded from wisp reaping")
 	t.Log("This prevents hq-mayor, hq-deacon, witness, refinery, etc. from being closed")
+}
+
+// TestScanExcludesAgentBeads documents that Scan() must use the same eligibility
+// predicate as Reap() for stale open wisps. If Scan counts agent beads but Reap
+// excludes them, the operator sees scan>0 and reap=0 for the same cutoff.
+func TestScanExcludesAgentBeads(t *testing.T) {
+	sourcePath := "reaper.go"
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", sourcePath, err)
+	}
+	source := string(data)
+	scanStart := strings.Index(source, "func Scan(")
+	reapStart := strings.Index(source, "func Reap(")
+	if scanStart == -1 || reapStart == -1 || reapStart <= scanStart {
+		t.Fatalf("could not isolate Scan() body in %s", sourcePath)
+	}
+	scanBody := source[scanStart:reapStart]
+	if !strings.Contains(scanBody, "w.issue_type != 'agent'") {
+		t.Fatalf("expected Scan() eligibility to exclude agent beads, scan body was:\n%s", scanBody)
+	}
 }

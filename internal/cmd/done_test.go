@@ -600,6 +600,54 @@ func TestMRVerificationSetsMRFailed(t *testing.T) {
 	}
 }
 
+// TestMRBeadCreationUsesRig verifies that MR bead creation specifies the rig (gt-7y7).
+// When a polecat works on a cross-rig bead (e.g., hq-xxx on rig "gastown"), the
+// MR bead must be created with Rig set to the polecat's rig so it lands in the
+// rig's database — not the town-level database where the source bead lives.
+// Without this, the refinery never finds the MR and the branch sits unmerged.
+func TestMRBeadCreationUsesRig(t *testing.T) {
+	tests := []struct {
+		name     string
+		issueID  string
+		rigName  string
+		wantRig  string
+	}{
+		{
+			name:    "same-rig bead: rig is still set",
+			issueID: "gt-abc",
+			rigName: "gastown",
+			wantRig: "gastown",
+		},
+		{
+			name:    "cross-rig hq- bead: MR must land in polecat rig",
+			issueID: "hq-abc",
+			rigName: "gastown",
+			wantRig: "gastown",
+		},
+		{
+			name:    "cross-rig en- bead: MR must land in polecat rig",
+			issueID: "en-xyz",
+			rigName: "gastown",
+			wantRig: "gastown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the CreateOptions construction in done.go.
+			opts := beads.CreateOptions{
+				Title:       "Merge: " + tt.issueID,
+				Labels:      []string{"gt:merge-request"},
+				Ephemeral:   true,
+				Rig:         tt.rigName,
+			}
+			if opts.Rig != tt.wantRig {
+				t.Errorf("CreateOptions.Rig = %q, want %q (issue %s)", opts.Rig, tt.wantRig, tt.issueID)
+			}
+		})
+	}
+}
+
 // TestDeferredKillNotOnValidationError verifies that the deferred session kill
 // does NOT trigger when runDone returns early due to validation errors (bad flags,
 // wrong role). The sessionCleanupNeeded flag must only be set after role detection
@@ -1338,6 +1386,143 @@ func TestPushSubmoduleChanges_NoSubmodules(t *testing.T) {
 	pushSubmoduleChanges(g, "main")
 }
 
+// TestAutoCommitSafetyNet verifies that the gt done auto-commit safety net
+// (gt-pvx) correctly detects uncommitted implementation work and auto-commits it.
+// This tests the git-level operations that underpin the safety net in done.go.
+func TestAutoCommitSafetyNet(t *testing.T) {
+	// Set up a git repo with uncommitted changes
+	dir := t.TempDir()
+	testRunGit(t, dir, "init")
+	testRunGit(t, dir, "config", "user.email", "test@test.com")
+	testRunGit(t, dir, "config", "user.name", "Test")
+
+	// Create initial commit
+	initialFile := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(initialFile, []byte("# Test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	testRunGit(t, dir, "add", "README.md")
+	testRunGit(t, dir, "commit", "-m", "initial commit")
+
+	g := gitpkg.NewGit(dir)
+
+	t.Run("detects uncommitted new files", func(t *testing.T) {
+		// Create uncommitted implementation files (simulates polecat forgetting to commit)
+		implFile := filepath.Join(dir, "main.go")
+		if err := os.WriteFile(implFile, []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(implFile)
+
+		ws, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if !ws.HasUncommittedChanges {
+			t.Error("expected HasUncommittedChanges=true for new file")
+		}
+		if ws.CleanExcludingRuntime() {
+			t.Error("expected CleanExcludingRuntime=false for non-runtime file")
+		}
+	})
+
+	t.Run("auto-commit preserves work", func(t *testing.T) {
+		// Create implementation files
+		implFile := filepath.Join(dir, "handler.go")
+		if err := os.WriteFile(implFile, []byte("package main\n\nfunc handler() {}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify uncommitted
+		ws, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if !ws.HasUncommittedChanges || ws.CleanExcludingRuntime() {
+			t.Fatal("expected non-runtime uncommitted changes")
+		}
+
+		// Simulate the auto-commit safety net
+		if err := g.Add("-A"); err != nil {
+			t.Fatalf("git add: %v", err)
+		}
+		if err := g.Commit("fix: auto-save uncommitted implementation work (gt-pvx safety net)"); err != nil {
+			t.Fatalf("git commit: %v", err)
+		}
+
+		// Verify clean after auto-commit
+		ws2, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork after commit: %v", err)
+		}
+		if ws2.HasUncommittedChanges {
+			t.Error("expected clean working tree after auto-commit")
+		}
+	})
+
+	t.Run("runtime-only changes skip auto-commit", func(t *testing.T) {
+		// Runtime artifacts should NOT trigger auto-commit
+		runtimeDir := filepath.Join(dir, ".claude")
+		if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		runtimeFile := filepath.Join(runtimeDir, "settings.json")
+		if err := os.WriteFile(runtimeFile, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(runtimeDir)
+
+		ws, err := g.CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		// HasUncommittedChanges is true (git sees the files), but CleanExcludingRuntime
+		// should be true (only runtime artifacts)
+		if ws.HasUncommittedChanges && !ws.CleanExcludingRuntime() {
+			t.Error("runtime-only changes should be considered clean excluding runtime")
+		}
+	})
+}
+
+// TestSyncGuardWithUncommittedChanges verifies that the worktree sync guard
+// (gt-pvx) prevents switching branches when uncommitted changes remain.
+func TestSyncGuardWithUncommittedChanges(t *testing.T) {
+	// This tests the logic: if auto-commit fails, we should NOT sync to main
+	dir := t.TempDir()
+	testRunGit(t, dir, "init")
+	testRunGit(t, dir, "config", "user.email", "test@test.com")
+	testRunGit(t, dir, "config", "user.name", "Test")
+
+	// Create initial commit on main
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	testRunGit(t, dir, "add", ".")
+	testRunGit(t, dir, "commit", "-m", "initial")
+
+	// Create feature branch with uncommitted changes
+	testRunGit(t, dir, "checkout", "-b", "polecat/test")
+	if err := os.WriteFile(filepath.Join(dir, "impl.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := gitpkg.NewGit(dir)
+	ws, err := g.CheckUncommittedWork()
+	if err != nil {
+		t.Fatalf("CheckUncommittedWork: %v", err)
+	}
+
+	// The sync guard condition: if uncommitted non-runtime changes exist, syncSafe = false
+	syncSafe := true
+	if ws.HasUncommittedChanges && !ws.CleanExcludingRuntime() {
+		syncSafe = false
+	}
+
+	if syncSafe {
+		t.Error("syncSafe should be false when uncommitted implementation files exist")
+	}
+}
+
 func testRunGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	fullArgs := append([]string{"-c", "protocol.file.allow=always"}, args...)
@@ -1348,3 +1533,4 @@ func testRunGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 }
+

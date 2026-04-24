@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 const (
@@ -214,12 +216,16 @@ func (dm *dogMol) discoverSteps() {
 			dm.stepIDs["verify"] = child.ID
 		case strings.Contains(titleLower, "compact"):
 			dm.stepIDs["compact"] = child.ID
+		case strings.Contains(titleLower, "checkpoint"):
+			dm.stepIDs["checkpoint"] = child.ID
 		case strings.Contains(titleLower, "auto-close") || strings.Contains(titleLower, "auto close"):
 			dm.stepIDs["auto-close"] = child.ID
 		case strings.Contains(titleLower, "sync"):
 			dm.stepIDs["sync"] = child.ID
 		case strings.Contains(titleLower, "offsite"):
 			dm.stepIDs["offsite"] = child.ID
+		case strings.Contains(titleLower, "rotat"):
+			dm.stepIDs["rotate"] = child.ID
 		}
 	}
 }
@@ -275,6 +281,7 @@ func (dm *dogMol) runBd(args ...string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, bdPath, args...)
 	cmd.Dir = dm.townRoot
+	util.SetDetachedProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

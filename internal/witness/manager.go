@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
 	"github.com/steveyegge/gastown/internal/session"
@@ -157,6 +158,15 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// package config) to prevent concurrent rig starts from corrupting the
 	// global agent registry.
 	townRoot := m.townRoot()
+
+	// Resolve CLAUDE_CONFIG_DIR from accounts.json so witness sessions
+	// use the correct account. Mirrors the daemon restart path (lifecycle.go).
+	accountsPath := constants.MayorAccountsPath(townRoot)
+	runtimeConfigDir, _, _ := config.ResolveAccountConfigDir(accountsPath, "")
+	if runtimeConfigDir == "" {
+		runtimeConfigDir = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
+
 	runtimeConfig := config.ResolveRoleAgentConfig("witness", townRoot, m.rig.Path)
 	witnessSettingsDir := config.RoleSettingsDir("witness", m.rig.Path)
 	if err := runtime.EnsureSettingsForRole(witnessSettingsDir, witnessDir, "witness", runtimeConfig); err != nil {
@@ -179,7 +189,7 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// NOTE: No gt prime injection needed - SessionStart hook handles it automatically
 	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
 	// Pass m.rig.Path so rig agent settings are honored (not town-level defaults)
-	command, err := buildWitnessStartCommand(m.rig.Path, m.rig.Name, townRoot, sessionID, agentOverride, roleConfig)
+	command, err := buildWitnessStartCommand(m.rig.Path, m.rig.Name, townRoot, sessionID, agentOverride, roleConfig, runtimeConfigDir)
 	if err != nil {
 		return err
 	}
@@ -196,11 +206,12 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// Set environment variables (non-fatal: session works without these)
 	// Use centralized AgentEnv for consistency across all role startup paths
 	envVars := config.AgentEnv(config.AgentEnvConfig{
-		Role:        "witness",
-		Rig:         m.rig.Name,
-		TownRoot:    townRoot,
-		Agent:       agentOverride,
-		SessionName: sessionID,
+		Role:             "witness",
+		Rig:              m.rig.Name,
+		TownRoot:         townRoot,
+		RuntimeConfigDir: runtimeConfigDir,
+		Agent:            agentOverride,
+		SessionName:      sessionID,
 	})
 	envVars = session.MergeRuntimeLivenessEnv(envVars, runtimeConfig)
 	for k, v := range envVars {
@@ -212,8 +223,7 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// the canonical qualified GT_ROLE (e.g., "gastown/witness" not "witness").
 	// See: https://github.com/steveyegge/gastown/issues/2492
 	for key, value := range roleConfigEnvVars(roleConfig, townRoot, m.rig.Name) {
-		if existing, alreadySet := envVars[key]; alreadySet {
-			log.Printf("witness env: skipping TOML %s=%q (AgentEnv already set %q)", key, value, existing)
+		if _, alreadySet := envVars[key]; alreadySet {
 			continue
 		}
 		_ = t.SetEnvironment(sessionID, key, value)
@@ -226,7 +236,7 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	}
 
 	// Apply Gas Town theming (non-fatal: theming failure doesn't affect operation)
-	theme := tmux.AssignTheme(m.rig.Name)
+	theme := tmux.ResolveSessionTheme(townRoot, m.rig.Name, "witness", "")
 	_ = t.ConfigureGasTownSession(sessionID, theme, m.rig.Name, "witness", "witness")
 
 	// Wait for Claude to start - fatal if Claude fails to launch
@@ -244,6 +254,13 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 	// Track PID for defense-in-depth orphan cleanup (non-fatal)
 	if err := session.TrackSessionPID(townRoot, sessionID, t); err != nil {
 		log.Printf("warning: tracking session PID for %s: %v", sessionID, err)
+	}
+
+	// Start nudge-queue poller (gt-dgf). Claude's UserPromptSubmit hook only
+	// drains when the agent submits a prompt. Idle agents never submit, so
+	// queued nudges deadlock. The poller breaks the cycle by polling every 10s.
+	if _, pollerErr := nudge.StartPoller(townRoot, sessionID); pollerErr != nil {
+		log.Printf("warning: could not start nudge poller for %s: %v", sessionID, pollerErr)
 	}
 
 	_ = runtime.RunStartupFallback(t, sessionID, "witness", runtimeConfig)
@@ -304,7 +321,7 @@ func roleConfigEnvVars(roleConfig *beads.RoleConfig, townRoot, rigName string) m
 	return expanded
 }
 
-func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOverride string, roleConfig *beads.RoleConfig) (string, error) {
+func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOverride string, roleConfig *beads.RoleConfig, runtimeConfigDir string) (string, error) {
 	if agentOverride != "" {
 		roleConfig = nil
 	}
@@ -315,9 +332,9 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOver
 			// Built-in role TOMLs hardcode "exec claude ..." which is wrong
 			// for non-Claude agents. Fall through to BuildStartupCommandFromConfig
 			// which uses the resolved agent's command and args.
-		} else if !isBuiltinClaudeStartCommand(roleConfig.StartCommand) {
-			// Custom (non-builtin) start_command with Claude agent: use TOML
-			// pattern with template expansion.
+		} else if !isBuiltinClaudeStartCommand(roleConfig.StartCommand) && !config.HasExplicitRoleAgent("witness", townRoot, rigPath) {
+			// Custom (non-builtin) start_command with Claude agent and no explicit
+			// role_agents mapping: use TOML pattern with template expansion.
 			cmd := beads.ExpandRolePattern(roleConfig.StartCommand, townRoot, rigName, "", "witness", session.PrefixFor(rigName))
 			if strings.HasPrefix(cmd, "exec ") {
 				cmd = "exec env -u CLAUDECODE NODE_OPTIONS='' " + strings.TrimPrefix(cmd, "exec ")
@@ -336,12 +353,13 @@ func buildWitnessStartCommand(rigPath, rigName, townRoot, sessionName, agentOver
 		Topic:     "patrol",
 	}, "Run `gt prime --hook` and begin patrol.")
 	command, err := config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
-		Role:        "witness",
-		Rig:         rigName,
-		TownRoot:    townRoot,
-		Prompt:      initialPrompt,
-		Topic:       "patrol",
-		SessionName: sessionName,
+		Role:             "witness",
+		Rig:              rigName,
+		TownRoot:         townRoot,
+		RuntimeConfigDir: runtimeConfigDir,
+		Prompt:           initialPrompt,
+		Topic:            "patrol",
+		SessionName:      sessionName,
 	}, rigPath, initialPrompt, agentOverride)
 	if err != nil {
 		return "", fmt.Errorf("building startup command: %w", err)

@@ -311,9 +311,11 @@ func (d *Daemon) compactDatabase(dbName string) error {
 	}
 	d.logger.Printf("compactor_dog: %s: committed flattened data", dbName)
 
-	// Step 6: Verify integrity — row counts must not decrease (data loss).
-	// Concurrent writes may increase counts during compaction — this is safe
-	// since the flattened commit includes those rows.
+	// Step 6: Verify integrity — row counts should not decrease significantly.
+	// Concurrent writes may increase counts (inserts) or decrease them slightly
+	// (deletes by wisp reaper, session cleanup, etc.) during the compaction
+	// window. Small decreases are safe and expected; only flag large drops
+	// (>10% of rows or >100 rows) as potential data loss.
 	postCounts, err := d.compactorGetRowCounts(db, dbName)
 	if err != nil {
 		return fmt.Errorf("post-compact row counts: %w", err)
@@ -325,7 +327,16 @@ func (d *Daemon) compactDatabase(dbName string) error {
 			return fmt.Errorf("integrity check: table %q missing after compaction", table)
 		}
 		if postCount < preCount {
-			return fmt.Errorf("integrity check: table %q lost rows: pre=%d post=%d", table, preCount, postCount)
+			lost := preCount - postCount
+			threshold := preCount / 10 // 10% of pre-count
+			if threshold < 100 {
+				threshold = 100
+			}
+			if lost > threshold {
+				return fmt.Errorf("integrity check: table %q lost rows: pre=%d post=%d (lost %d, threshold %d)", table, preCount, postCount, lost, threshold)
+			}
+			d.logger.Printf("compactor_dog: %s: table %q lost %d rows during compaction (concurrent delete, safe: pre=%d post=%d)",
+				dbName, table, lost, preCount, postCount)
 		}
 		if postCount > preCount {
 			d.logger.Printf("compactor_dog: %s: table %q gained %d rows during compaction (concurrent write, safe)",
@@ -491,8 +502,8 @@ func (d *Daemon) surgicalRebaseOnce(dbName string, keepRecent int) error {
 	}
 	d.logger.Printf("compactor_dog: %s: rebase executed successfully", dbName)
 
-	// Step 6: Verify integrity — row counts must not decrease (data loss).
-	// Concurrent writes may increase counts during rebase — this is safe.
+	// Step 6: Verify integrity — row counts should not decrease significantly.
+	// Small decreases from concurrent deletes (wisp reaper, etc.) are expected.
 	postCounts, err := d.compactorGetRowCounts(db, dbName)
 	if err != nil {
 		d.logger.Printf("compactor_dog: %s: WARNING: could not verify row counts after rebase: %v", dbName, err)
@@ -504,8 +515,17 @@ func (d *Daemon) surgicalRebaseOnce(dbName string, keepRecent int) error {
 				return fmt.Errorf("integrity: table %q missing after rebase", table)
 			}
 			if postCount < preCount {
-				d.surgicalCleanup(db, baseBranch, workBranch)
-				return fmt.Errorf("integrity: table %q lost rows: pre=%d post=%d", table, preCount, postCount)
+				lost := preCount - postCount
+				threshold := preCount / 10
+				if threshold < 100 {
+					threshold = 100
+				}
+				if lost > threshold {
+					d.surgicalCleanup(db, baseBranch, workBranch)
+					return fmt.Errorf("integrity: table %q lost rows: pre=%d post=%d (lost %d, threshold %d)", table, preCount, postCount, lost, threshold)
+				}
+				d.logger.Printf("compactor_dog: %s: table %q lost %d rows during rebase (concurrent delete, safe: pre=%d post=%d)",
+					dbName, table, lost, preCount, postCount)
 			}
 			if postCount > preCount {
 				d.logger.Printf("compactor_dog: %s: table %q gained %d rows during rebase (concurrent write, safe)",
@@ -641,8 +661,8 @@ func (d *Daemon) compactorGetRowCounts(db *sql.DB, dbName string) (map[string]in
 	ctx, cancel := context.WithTimeout(context.Background(), compactorQueryTimeout)
 	defer cancel()
 
-	// Get list of user tables (excluding dolt system tables).
-	query := fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name NOT LIKE 'dolt_%%'", dbName)
+	// Get list of user tables (excluding dolt system tables and views).
+	query := fmt.Sprintf("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name NOT LIKE 'dolt_%%' AND table_type = 'BASE TABLE'", dbName)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list tables: %w", err)

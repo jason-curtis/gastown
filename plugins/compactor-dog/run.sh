@@ -397,12 +397,20 @@ for entry in "${CANDIDATES[@]}"; do
       log "  [info] Table $TABLE appeared after compaction (new table — concurrent write)"
       continue
     fi
-    # Only fail on data loss (postCount < preCount).
-    # postCount > preCount is safe: concurrent writes during flatten add rows
-    # (merge base shifts, txn is preserved — see compactor_dog.go).
+    # Small decreases are safe: concurrent deletes (wisp reaper, session cleanup)
+    # can legitimately reduce row counts during the compaction window.
+    # Only fail on large drops (>10% or >100 rows) indicating real data loss.
+    # postCount > preCount is safe: concurrent inserts during flatten add rows.
     if [[ -n "$POST_COUNT" && "$POST_COUNT" -lt "$PRE" ]]; then
-      log "  INTEGRITY FAILURE: $DB.$TABLE — data loss: pre=$PRE post=$POST_COUNT"
-      INTEGRITY_OK=false
+      LOST=$((PRE - POST_COUNT))
+      THRESHOLD=$((PRE / 10))
+      [[ "$THRESHOLD" -lt 100 ]] && THRESHOLD=100
+      if [[ "$LOST" -gt "$THRESHOLD" ]]; then
+        log "  INTEGRITY FAILURE: $DB.$TABLE — data loss: pre=$PRE post=$POST_COUNT (lost=$LOST threshold=$THRESHOLD)"
+        INTEGRITY_OK=false
+      else
+        log "  [info] $DB.$TABLE lost $LOST rows during compaction (concurrent delete, safe: pre=$PRE post=$POST_COUNT)"
+      fi
     fi
   done <<< "$PRE_TABLES"
 

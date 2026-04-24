@@ -393,6 +393,9 @@ func TestEnsureCustomTypes(t *testing.T) {
 }
 
 func TestEnsureCustomTypes_VerifyPersistence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows — uses shell stub")
+	}
 	t.Run("sentinel not written when db verify fails", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("test uses Unix shell script mock for bd")

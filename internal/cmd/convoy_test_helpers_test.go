@@ -377,6 +377,10 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
 		t.Fatalf("mkdir .beads: %v", err)
 	}
+	// Write sentinels in town root (getTownBeadsDir returns townRoot) and
+	// in .beads (used by other callers) so EnsureCustomTypes skips bd calls.
+	writeBeadsSentinels(t, townRoot)
+	writeBeadsSentinels(t, filepath.Join(townRoot, ".beads"))
 
 	// Write sentinel files so beads.EnsureCustomTypes/Statuses skip bd calls.
 	typesList := strings.Join(constants.BeadsCustomTypesList(), ",")
@@ -414,6 +418,7 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 			if err := os.MkdirAll(rigBeadsDir, 0755); err != nil {
 				t.Fatalf("mkdir rig .beads dir %s: %v", rigBeadsDir, err)
 			}
+			writeBeadsSentinels(t, rigBeadsDir)
 		}
 	}
 
@@ -431,6 +436,21 @@ func (d *testDAG) Setup(t *testing.T) (townRoot, logPath string) {
 	}
 
 	return townRoot, logPath
+}
+
+// writeBeadsSentinels writes the types and statuses sentinel files into a
+// .beads directory so that EnsureCustomTypes/EnsureCustomStatuses hit the
+// fast path without calling bd. Use this in test setups that use bd stubs.
+func writeBeadsSentinels(t *testing.T, beadsDir string) {
+	t.Helper()
+	types := strings.Join(constants.BeadsCustomTypesList(), ",")
+	statuses := strings.Join(constants.BeadsCustomStatusesList(), ",")
+	if err := os.WriteFile(filepath.Join(beadsDir, ".gt-types-configured"), []byte(types+"\n"), 0644); err != nil {
+		t.Fatalf("write types sentinel in %s: %v", beadsDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, ".gt-statuses-configured"), []byte(statuses+"\n"), 0644); err != nil {
+		t.Fatalf("write statuses sentinel in %s: %v", beadsDir, err)
+	}
 }
 
 // ---------------------------------------------------------------------------

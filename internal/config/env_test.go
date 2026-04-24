@@ -1181,7 +1181,8 @@ func TestResolveDoltPort_ConfigYAMLTakesPrecedence(t *testing.T) {
 }
 
 func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "") // isolate from live Dolt server
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	tmpDir := t.TempDir()
 	mayorDir := filepath.Join(tmpDir, "mayor")
 	if err := os.MkdirAll(mayorDir, 0755); err != nil {
@@ -1199,7 +1200,8 @@ func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
 }
 
 func TestResolveDoltPort_NoConfig(t *testing.T) {
-	t.Setenv("GT_DOLT_PORT", "") // isolate from live Dolt server
+	t.Setenv("GT_DOLT_PORT", "")   // isolate from live Dolt server
+	t.Setenv("BEADS_DOLT_PORT", "") // isolate from live Dolt server
 	tmpDir := t.TempDir()
 	got := resolveDoltPort(tmpDir)
 	if got != 0 {

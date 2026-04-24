@@ -290,6 +290,7 @@ type ListOptions struct {
 // CreateOptions specifies options for creating an issue.
 type CreateOptions struct {
 	Title       string
+	IssueType   string   // Issue type for --type flag (e.g., "agent", "rig", "molecule"). Empty = bd default ("task").
 	Type        string   // Deprecated: use Labels instead. Was "task", "bug", "feature", "epic".
 	Label       string   // Deprecated: use Labels instead. Backward-compatible single-label form.
 	Labels      []string // Labels to set (e.g., "gt:task", "gt:merge-request")
@@ -1203,6 +1204,9 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 
 	args := []string{"create", "--json"}
 
+	if opts.IssueType != "" {
+		args = append(args, "--type="+opts.IssueType)
+	}
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}
@@ -1270,6 +1274,9 @@ func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
 		args = append(args, "--force")
 	}
 
+	if opts.IssueType != "" {
+		args = append(args, "--type="+opts.IssueType)
+	}
 	if opts.Title != "" {
 		args = append(args, "--title="+opts.Title)
 	}

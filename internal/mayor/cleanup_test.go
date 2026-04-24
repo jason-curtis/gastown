@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"syscall"
 	"testing"
 )
 
@@ -236,7 +235,7 @@ func TestRemoveACPPid_RemovesStalePid(t *testing.T) {
 		t.Fatalf("failed to create mayor dir: %v", err)
 	}
 
-	initialPid := syscall.Getpid() - 10000
+	initialPid := os.Getpid() - 10000
 	if initialPid < 1 {
 		initialPid = 1
 	}

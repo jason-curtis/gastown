@@ -368,6 +368,11 @@ func TestSendFromCrewWorkspace_AvoidsEphemeralPrefixMismatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(townBeadsDir, "beads.db"), []byte{}, 0644); err != nil {
 		t.Fatalf("write beads.db: %v", err)
 	}
+	// Write sentinel files so EnsureCustomTypes/Statuses skip bd calls.
+	typesList := strings.Join(constants.BeadsCustomTypesList(), ",")
+	if err := os.WriteFile(filepath.Join(townBeadsDir, ".gt-types-configured"), []byte(typesList+"\n"), 0644); err != nil {
+		t.Fatalf("write types sentinel: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(`{"name":"test"}`), 0644); err != nil {
 		t.Fatalf("write town.json: %v", err)
 	}
@@ -1206,10 +1211,12 @@ func TestValidateRecipient(t *testing.T) {
 		t.Fatalf("bd init: %v", err)
 	}
 
-	// Point BEADS_DB at the isolated SQLite file so the Router's
-	// runBdCommand (which inherits process env) uses it too.
-	beadsDB := filepath.Join(beadsDir, "beads.db")
-	t.Setenv("BEADS_DB", beadsDB)
+	// Point the Router's external bd calls at the same ephemeral Dolt
+	// container used by the isolated Beads wrapper. Without this, bd list
+	// inherits the host environment and queries the production server
+	// (port 3307), which doesn't have the test agents.
+	t.Setenv("GT_DOLT_PORT", strconv.Itoa(doltPort))
+	t.Setenv("BEADS_DOLT_PORT", strconv.Itoa(doltPort))
 
 	// Register custom types required for agent beads.
 	if _, err := b.Run("config", "set", "types.custom", "agent,role,rig,convoy,slot,queue,event,message,molecule,gate,merge-request"); err != nil {
@@ -1217,8 +1224,8 @@ func TestValidateRecipient(t *testing.T) {
 	}
 
 	// Create test agent beads with gt:agent label.
-	// Safe to use "gt-" prefixed IDs since both NewIsolated (--db) and the
-	// Router (BEADS_DB env) point to the same local SQLite database.
+	// Safe to use "gt-" prefixed IDs since both NewIsolatedWithPort and the
+	// Router (via GT_DOLT_PORT env) query the same ephemeral Dolt container.
 	createAgent := func(id, title string) {
 		if _, err := b.Run("create", title, "--labels=gt:agent", "--id="+id, "--force"); err != nil {
 			t.Fatalf("creating agent %s: %v", id, err)

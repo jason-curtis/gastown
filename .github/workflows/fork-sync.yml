@@ -12,25 +12,27 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          # PAT with workflow scope — GITHUB_TOKEN cannot push workflow file changes
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Sync fork
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Use GitHub API to merge upstream into fork
-          RESULT=$(gh api repos/${{ github.repository }}/merge-upstream \
-            -X POST -f branch=main --jq '.merge_type' 2>&1) || true
+          git remote add upstream https://github.com/steveyegge/gastown.git
+          git fetch upstream main
 
-          case "$RESULT" in
-            none)
-              echo "Already up to date"
-              ;;
-            fast-forward|merge)
-              echo "Synced via $RESULT"
-              ;;
-            *)
-              echo "::warning::Fork sync failed: $RESULT"
-              echo "Manual merge may be required"
-              exit 1
-              ;;
-          esac
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "Already up to date"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor HEAD upstream/main; then
+            git merge upstream/main --ff-only
+          else
+            git merge upstream/main --no-edit
+          fi
+
+          git push origin main
+          echo "Synced with upstream"

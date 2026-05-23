@@ -157,6 +157,13 @@ func runDailyDigest() error {
 		return enc.Encode(report)
 	}
 
+	// Suppress mail if nothing was compacted and no anomalies.
+	// A no-op patrol run doesn't need to flood the mayor inbox.
+	if len(result.Deleted) == 0 && len(result.Promoted) == 0 && len(report.Anomalies) == 0 {
+		fmt.Printf("%s No wisps compacted on %s — skipping mail\n", style.Dim.Render("○"), dateStr)
+		return nil
+	}
+
 	// Format as markdown
 	markdown := formatDailyDigest(report)
 

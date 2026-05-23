@@ -1670,9 +1670,6 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 	if err != nil {
 		return nil, err
 	}
-	if decision := m.reuseDecisionForPolecat(name, current.State); !decision.Reusable {
-		return nil, fmt.Errorf("%w: %s", ErrPolecatNeedsRecovery, decision.Reason)
-	}
 
 	// Kill any existing session unconditionally before reuse.
 	// The polecat was found idle (no hooked work), so even a "live" session is
@@ -1687,6 +1684,10 @@ func (m *Manager) ReuseIdlePolecat(name string, opts AddOptions) (*Polecat, erro
 	// new work undiscovered.
 	if err := m.killExistingPolecatSession(name, "reuse"); err != nil {
 		return nil, err
+	}
+
+	if decision := m.reuseDecisionForPolecat(name, current.State); !decision.Reusable {
+		return nil, fmt.Errorf("%w: %s", ErrPolecatNeedsRecovery, decision.Reason)
 	}
 
 	// Get worktree path (must already exist for reuse)

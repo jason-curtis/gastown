@@ -875,19 +875,15 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if formulaName != "" {
 		existingMolecules := collectExistingMolecules(info)
 		if len(existingMolecules) > 0 {
-			stale := force || isOrphanMolecule(info)
 			if slingDryRun {
 				fmt.Printf("  Would burn %d stale molecule(s): %s\n",
 					len(existingMolecules), strings.Join(existingMolecules, ", "))
-			} else if stale {
+			} else {
 				fmt.Printf("  %s Burning %d stale molecule(s) from previous assignment: %s\n",
 					style.Warning.Render("⚠"), len(existingMolecules), strings.Join(existingMolecules, ", "))
 				if err := burnExistingMolecules(existingMolecules, beadID, townRoot); err != nil {
 					return fmt.Errorf("burning stale molecules: %w", err)
 				}
-			} else {
-				return fmt.Errorf("bead %s already has %d attached molecule(s): %s\nUse --force to replace, or --hook-raw-bead to skip formula",
-					beadID, len(existingMolecules), strings.Join(existingMolecules, ", "))
 			}
 		}
 	}

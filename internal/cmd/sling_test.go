@@ -1084,6 +1084,9 @@ func TestSlingAutoBurnsMoleculesWithoutForce(t *testing.T) {
 	// Has an attached molecule (stale from previous polecat session).
 	bdScript := `#!/bin/sh
 set -e
+if [ "$1" = "--db" ]; then
+  shift 2
+fi
 cmd="$1"
 shift || true
 if [ "$cmd" = "--allow-stale" ]; then
@@ -1104,6 +1107,10 @@ esac
 exit 0
 `
 	bdScriptWindows := `@echo off
+if "%1"=="--db" (
+  shift
+  shift
+)
 set "cmd=%1"
 if "%cmd%"=="--allow-stale" set "cmd=%2"
 if "%cmd%"=="show" (

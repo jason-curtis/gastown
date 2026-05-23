@@ -1,12 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 // bdCmd is a builder for constructing bd exec.Command calls.
@@ -20,6 +26,7 @@ type bdCmd struct {
 	autoCommit bool
 	gtRoot     string
 	beadsDir   string
+	routing    bool
 }
 
 // BdCmd creates a new bd command builder with the given arguments.
@@ -62,7 +69,9 @@ func (b *bdCmd) WithBeadsDir(dir string) *bdCmd {
 	return b
 }
 
-// Dir sets the working directory for the command.
+// Dir sets the working directory for the command. When a directory is provided,
+// bd is also pinned to that directory's resolved .beads database unless
+// WithBeadsDir supplies a more specific database.
 func (b *bdCmd) Dir(dir string) *bdCmd {
 	b.dir = dir
 	return b
@@ -70,9 +79,18 @@ func (b *bdCmd) Dir(dir string) *bdCmd {
 
 // StripBeadsDir removes any inherited BEADS_DIR from the environment.
 // Use this when the command relies on Dir() for routing and an inherited
-// BEADS_DIR would incorrectly override the working-directory-based database
-// discovery. This fixes rig-prefixed bead resolution (GH#2126).
+// BEADS_DIR would incorrectly override the resolved database. If Dir() is set,
+// buildEnv will still add an explicit BEADS_DIR for that directory; this method
+// only strips inherited values from the parent process.
 func (b *bdCmd) StripBeadsDir() *bdCmd {
+	b.env = filterEnvKey(b.env, "BEADS_DIR")
+	return b
+}
+
+// WithRouting strips inherited bd target selectors and does not pin BEADS_DIR,
+// allowing bd prefix routing to choose the target database. Dir still sets cwd.
+func (b *bdCmd) WithRouting() *bdCmd {
+	b.routing = true
 	b.env = filterEnvKey(b.env, "BEADS_DIR")
 	return b
 }
@@ -98,6 +116,17 @@ func filterEnvKey(env []string, key string) []string {
 	return result
 }
 
+func filterBdTargetEnv(env []string) []string {
+	return beads.StripBDTargetEnv(env)
+}
+
+func pinBeadsDirEnv(env []string, beadsDir string) []string {
+	if beadsDir == "" {
+		return beads.StripBDTargetEnv(env)
+	}
+	return beads.BuildPinnedBDEnv(env, beadsDir)
+}
+
 // buildEnv constructs the final environment slice based on configured options.
 func (b *bdCmd) buildEnv() []string {
 	env := b.env
@@ -107,6 +136,7 @@ func (b *bdCmd) buildEnv() []string {
 	// so an existing "off" entry would shadow the appended "on".
 	if b.autoCommit {
 		env = filterEnvKey(env, "BD_DOLT_AUTO_COMMIT")
+		env = filterEnvKey(env, "BD_READONLY")
 		env = append(env, "BD_DOLT_AUTO_COMMIT=on")
 	}
 
@@ -120,9 +150,19 @@ func (b *bdCmd) buildEnv() []string {
 	// Add BEADS_DIR if specified.
 	// This prevents inherited BEADS_DIR from causing bd to target the wrong
 	// database (e.g., HQ instead of rig). See gt-ctir.
-	if b.beadsDir != "" {
-		env = filterEnvKey(env, "BEADS_DIR")
-		env = append(env, "BEADS_DIR="+b.beadsDir)
+	//
+	// Also clear inherited Dolt target variables. Dashboard and agent shells can
+	// carry a town-level or remote BEADS_DOLT_* target; keeping it while changing
+	// BEADS_DIR makes `bd show <displayed-id>` query a different database than
+	// `gt ready` used to render the row.
+	if b.routing {
+		env = beads.BuildRoutingBDEnv(env, beads.ResolveBeadsDir(b.dir))
+	} else if b.beadsDir != "" {
+		env = pinBeadsDirEnv(env, b.beadsDir)
+	} else if b.dir != "" {
+		env = pinBeadsDirEnv(env, beads.ResolveBeadsDir(b.dir))
+	} else {
+		env = beads.SuppressBDSideEffects(beads.StripBDTargetEnv(env))
 	}
 
 	return env
@@ -137,6 +177,35 @@ func (b *bdCmd) Build() *exec.Cmd {
 	cmd.Env = b.buildEnv()
 	cmd.Stderr = b.stderr
 	return cmd
+}
+
+func resolveBdCmdTimeout() time.Duration {
+	if v := os.Getenv("GT_BD_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return constants.BdCommandTimeout
+}
+
+func (b *bdCmd) buildContextCommand(ctx context.Context) *exec.Cmd {
+	args := b.resolvedArgs()
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	util.SetProcessGroup(cmd)
+	cmd.Dir = b.dir
+	cmd.Env = b.buildEnv()
+	cmd.Stderr = b.stderr
+	return cmd
+}
+
+func wrapBdCmdTimeout(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == context.DeadlineExceeded || strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		return fmt.Errorf("bd command timed out after %v: %w", resolveBdCmdTimeout(), err)
+	}
+	return err
 }
 
 // resolvedArgs returns the final args, stripping --allow-stale if bd doesn't support it.
@@ -156,7 +225,9 @@ func (b *bdCmd) resolvedArgs() []string {
 // Run builds and runs the command, returning any error.
 // This is a convenience method equivalent to Build().Run().
 func (b *bdCmd) Run() error {
-	return b.Build().Run()
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdCmdTimeout())
+	defer cancel()
+	return wrapBdCmdTimeout(ctx, b.buildContextCommand(ctx).Run())
 }
 
 // Output builds and runs the command, returning stdout and any error.
@@ -164,16 +235,23 @@ func (b *bdCmd) Run() error {
 // Note: Output() captures stdout but Stderr must still be configured
 // separately if you want to capture stderr instead of it going to os.Stderr.
 func (b *bdCmd) Output() ([]byte, error) {
-	return b.Build().Output()
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdCmdTimeout())
+	defer cancel()
+	out, err := b.buildContextCommand(ctx).Output()
+	return out, wrapBdCmdTimeout(ctx, err)
 }
 
 // CombinedOutput builds and runs the command, returning combined stdout+stderr.
 // This overrides the configured Stderr writer to capture both streams.
 // Useful for including command output in error messages.
 func (b *bdCmd) CombinedOutput() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdCmdTimeout())
+	defer cancel()
 	args := b.resolvedArgs()
-	cmd := exec.Command("bd", args...)
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	util.SetProcessGroup(cmd)
 	cmd.Dir = b.dir
 	cmd.Env = b.buildEnv()
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	return out, wrapBdCmdTimeout(ctx, err)
 }

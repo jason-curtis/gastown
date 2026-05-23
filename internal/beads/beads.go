@@ -37,6 +37,9 @@ var (
 	bdAllowStaleMu     sync.Mutex
 	bdAllowStalePath   string
 	bdAllowStaleResult bool
+	// bdAllowStaleProbeTimeout bounds the capability probe so a wedged bd
+	// binary cannot hang higher-level commands such as gt status.
+	bdAllowStaleProbeTimeout = 2 * time.Second
 )
 
 // ResetBdAllowStaleCacheForTest clears the cached bd --allow-stale capability.
@@ -70,18 +73,23 @@ func BdSupportsAllowStaleWithEnv(env []string) bool {
 		return cachedResult
 	}
 
-	cmd := exec.Command(bdPath, "--allow-stale", "version") //nolint:gosec // G204: bd is a trusted internal tool
-	util.SetDetachedProcessGroup(cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), bdAllowStaleProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bdPath, "--allow-stale", "version") //nolint:gosec // G204: bd is a trusted internal tool
+	util.SetProcessGroup(cmd)
 	if env != nil {
 		cmd.Env = env
 	}
 	var combinedOut bytes.Buffer
 	cmd.Stdout = &combinedOut
 	cmd.Stderr = &combinedOut
-	_ = cmd.Run()
+	err = cmd.Run()
 	// bd v0.60+ exits 0 even on unknown flags, printing the error to stderr.
-	// Check output for "unknown flag" to detect lack of support.
-	supported := !strings.Contains(combinedOut.String(), "unknown flag")
+	// Check output for "unknown flag" to detect lack of support. Treat probe
+	// errors/timeouts as unsupported so higher-level commands fail closed
+	// instead of hanging on a wedged bd subprocess.
+	supported := err == nil && !strings.Contains(combinedOut.String(), "unknown flag")
 
 	bdAllowStaleMu.Lock()
 	if bdAllowStalePath != bdPath {
@@ -334,6 +342,14 @@ type Beads struct {
 	// Populated on first call to getTownRoot() to avoid filesystem walk on every operation.
 	townRoot     string
 	townRootOnce sync.Once
+
+	// noRoute disables prefix-based routing for this Beads instance.
+	// Used for agent-bead operations: agent beads (gt:agent label) live in
+	// the town database regardless of their ID prefix, so prefix routing
+	// (which assumes "za-*" → zack DB) misroutes them. When set, Show()
+	// and forIssueID() skip ResolveRoutingTarget and operate against
+	// beadsDir directly.
+	noRoute bool
 }
 
 // New creates a new Beads wrapper for the given directory.
@@ -362,6 +378,48 @@ func NewWithBeadsDir(workDir, beadsDir string) *Beads {
 	return &Beads{workDir: workDir, beadsDir: beadsDir}
 }
 
+// ForAgentBead returns a Beads wrapper suitable for operating on agent beads.
+//
+// Agent beads (labeled gt:agent) live in the TOWN database, but their IDs
+// are prefixed with the rig prefix (e.g. "za-zack-polecat-furiosa"). The
+// default prefix routing in routes.jsonl maps "za-" → zack rig database, so
+// any agent-bead operation issued from a rig context (or any context that
+// triggers routing) gets sent to the wrong DB and fails with "issue not
+// found". This silently breaks gt done's hook clearing, agent state
+// transition, completion metadata, etc.
+//
+// ForAgentBead bypasses that:
+//   - Re-roots the wrapper at the town's .beads directory (so bd CLI itself
+//     opens the town/hq Dolt database where agent beads live).
+//   - Sets noRoute=true so the Go-side routing helpers (Show,
+//     ResolveRoutingTarget, forIssueID) do not redirect lookups by prefix.
+//
+// If the town root cannot be determined, returns the original wrapper to
+// preserve current behavior.
+func (b *Beads) ForAgentBead() *Beads {
+	townRoot := b.getTownRoot()
+	if townRoot == "" {
+		return b
+	}
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+	return &Beads{
+		workDir:    townRoot,
+		beadsDir:   townBeadsDir,
+		isolated:   b.isolated,
+		serverPort: b.serverPort,
+		store:      b.store,
+		townRoot:   townRoot,
+		noRoute:    true,
+	}
+}
+
+func (b *Beads) agentBeadTarget() *Beads {
+	if b.noRoute {
+		return b
+	}
+	return b.ForAgentBead()
+}
+
 // getActor returns the BD_ACTOR value for this context.
 // Returns empty string when in isolated mode (tests) to prevent
 // inherited actors from routing to production databases.
@@ -387,9 +445,56 @@ func (b *Beads) getTownRoot() string {
 // This follows any redirects and returns the actual beads directory path.
 func (b *Beads) getResolvedBeadsDir() string {
 	if b.beadsDir != "" {
-		return b.beadsDir
+		return ResolveBeadsDir(b.beadsDir)
 	}
 	return ResolveBeadsDir(b.workDir)
+}
+
+// targetBeadsDirForCreate returns the database a create operation should use.
+// Rig is authoritative for MR/conflict-task creates; otherwise parent-prefixed
+// children should land beside their parent so bd can resolve the relationship.
+func (b *Beads) targetBeadsDirForCreate(opts CreateOptions) string {
+	fallback := b.getResolvedBeadsDir()
+	townRoot := b.getTownRoot()
+
+	if opts.Rig != "" && townRoot != "" {
+		if rigDir := GetRigDirForName(townRoot, opts.Rig); rigDir != "" {
+			if targetDir := ResolveBeadsDir(rigDir); targetDir != "" {
+				return targetDir
+			}
+		}
+	}
+
+	if opts.Parent != "" {
+		return ResolveRoutingTarget(townRoot, opts.Parent, fallback)
+	}
+
+	return fallback
+}
+
+// forIssueID returns a Beads wrapper bound to the correct beads directory for
+// the given issue ID. This is needed for cross-rig write operations that use an
+// ID to determine the owning database.
+//
+// When noRoute is set (see ForAgentBead), routing is skipped: the wrapper is
+// returned unchanged. Used for agent-bead operations whose IDs share the rig
+// prefix but whose data lives in the town DB.
+func (b *Beads) forIssueID(id string) *Beads {
+	if b.noRoute {
+		return b
+	}
+	resolved := ResolveBeadsDirForID(b.getResolvedBeadsDir(), id)
+	if resolved == "" || resolved == b.getResolvedBeadsDir() {
+		return b
+	}
+	return &Beads{
+		workDir:    b.workDir,
+		beadsDir:   resolved,
+		isolated:   b.isolated,
+		serverPort: b.serverPort,
+		store:      b.store,
+		townRoot:   b.townRoot,
+	}
 }
 
 // Init initializes a new beads database in the working directory.
@@ -403,14 +508,43 @@ func (b *Beads) Init(prefix string) error {
 	}
 	args = append(args, "--quiet")
 	if b.serverPort > 0 {
-		args = append(args, "--server-port", fmt.Sprintf("%d", b.serverPort))
+		args = append(args, "--server", "--server-port", fmt.Sprintf("%d", b.serverPort))
 	}
 	_, err := b.run(args...)
 	return err
 }
 
+// bdSubprocessTimeout caps how long a single bd subprocess may run before
+// being killed. Without this, bd can block indefinitely waiting on a slow
+// Dolt server (e.g. paging from swap under memory pressure), and macOS
+// Jetsam may SIGKILL the orphaned bd process before it ever returns.
+// 60s is large enough to cover normal slow-path retries (Dolt MySQL client
+// retries up to 30s) but short enough to fail fast and surface to callers.
+// Override via GT_BD_TIMEOUT_SEC env var for testing or unusual workloads.
+// Investigation: dc-1pq8 (forensic report 2026-05-02).
+const bdSubprocessTimeout = 60 * time.Second
+
+// resolveBdSubprocessTimeout returns the configured timeout, honoring the
+// GT_BD_TIMEOUT_SEC env var override (must parse as a positive integer).
+func resolveBdSubprocessTimeout() time.Duration {
+	if v := os.Getenv("GT_BD_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return bdSubprocessTimeout
+}
+
 // run executes a bd command and returns stdout.
-func (b *Beads) run(args ...string) (_ []byte, retErr error) {
+func (b *Beads) run(args ...string) ([]byte, error) {
+	return b.runWithStdin(nil, args...)
+}
+
+// runWithStdin executes a bd command, optionally piping stdinData to bd's stdin.
+// When stdinData is nil, behaves identically to run. Use this for flags like
+// --body-file=- that read multi-line content from stdin (avoids embedding
+// newlines in --description, which bd 1.0.3+ rejects).
+func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr error) {
 	start := time.Now()
 	// Declare buffers before defer so the closure captures them after cmd.Run.
 	var stdout, stderr bytes.Buffer
@@ -425,17 +559,20 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 
 	// Conditionally use --allow-stale to prevent failures when db is temporarily stale
 	// (e.g., after daemon is killed during shutdown). Only if bd supports it.
-	beadsDir := b.beadsDir
-	if beadsDir == "" {
-		beadsDir = ResolveBeadsDir(b.workDir)
-	}
+	beadsDir := b.getResolvedBeadsDir()
 	runEnv := append(b.buildRunEnv(), "BEADS_DIR="+beadsDir)
 	fullArgs := MaybePrependAllowStaleWithEnv(runEnv, args)
+
+	// Bound the subprocess runtime so a slow Dolt response doesn't leave bd
+	// blocking forever (under memory pressure that invites Jetsam SIGKILL).
+	// The context covers both the initial attempt and the --flat retry.
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdSubprocessTimeout())
+	defer cancel()
 
 	// Always explicitly set BEADS_DIR to prevent inherited env vars from
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
 	// resolve from working directory.
-	cmd := exec.Command("bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+	cmd := exec.CommandContext(ctx, "bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 	util.SetDetachedProcessGroup(cmd)
 	cmd.Dir = b.workDir
 
@@ -444,6 +581,9 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if stdinData != nil {
+		cmd.Stdin = bytes.NewReader(stdinData)
+	}
 
 	err := cmd.Run()
 
@@ -459,13 +599,16 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		cmd = exec.Command("bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+		cmd = exec.CommandContext(ctx, "bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 		util.SetDetachedProcessGroup(cmd)
 		cmd.Dir = b.workDir
 		cmd.Env = runEnv
 		cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
+		if stdinData != nil {
+			cmd.Stdin = bytes.NewReader(stdinData)
+		}
 		err = cmd.Run()
 	}
 
@@ -497,7 +640,11 @@ func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //noli
 	runEnv := b.buildRoutingEnv()
 	fullArgs := MaybePrependAllowStaleWithEnv(runEnv, args)
 
-	cmd := exec.Command("bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+	// Bound subprocess runtime — see bdSubprocessTimeout doc comment.
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBdSubprocessTimeout())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 	util.SetDetachedProcessGroup(cmd)
 	cmd.Dir = b.workDir
 
@@ -579,11 +726,9 @@ func (b *Beads) buildRunEnv() []string {
 			env = append(env, fmt.Sprintf("GT_DOLT_PORT=%d", b.serverPort))
 			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
 		}
-		return env
+		return SuppressBDSideEffects(env)
 	}
-	env := stripEnvPrefixes(os.Environ(), "BEADS_DIR=")
-	env = overrideDoltEnvFromBeadsDir(env, b.getResolvedBeadsDir())
-	return translateDoltPort(env)
+	return BuildPinnedBDEnv(os.Environ(), b.getResolvedBeadsDir())
 }
 
 // buildRoutingEnv builds the environment for runWithRouting() calls.
@@ -596,11 +741,9 @@ func (b *Beads) buildRoutingEnv() []string {
 			env = append(env, fmt.Sprintf("GT_DOLT_PORT=%d", b.serverPort))
 			env = append(env, fmt.Sprintf("BEADS_DOLT_PORT=%d", b.serverPort))
 		}
-		return env
+		return SuppressBDSideEffects(env)
 	}
-	env := stripEnvPrefixes(os.Environ(), "BEADS_DIR=")
-	env = overrideDoltEnvFromBeadsDir(env, b.getResolvedBeadsDir())
-	return translateDoltPort(env)
+	return BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
 }
 
 // filterBeadsEnv removes beads-related environment variables from the given
@@ -1081,10 +1224,13 @@ func (b *Beads) ReadyWithType(issueType string) ([]*Issue, error) {
 func (b *Beads) Show(id string) (*Issue, error) {
 	// Route cross-rig queries via routes.jsonl so that rig-level bead IDs
 	// (e.g., "gt-abc123") resolve to the correct rig database.
-	targetDir := ResolveRoutingTarget(b.getTownRoot(), id, b.getResolvedBeadsDir())
-	if targetDir != b.getResolvedBeadsDir() {
-		target := NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
-		return target.Show(id)
+	// noRoute (see ForAgentBead) bypasses this for agent-bead lookups.
+	if !b.noRoute {
+		targetDir := ResolveRoutingTarget(b.getTownRoot(), id, b.getResolvedBeadsDir())
+		if targetDir != b.getResolvedBeadsDir() {
+			target := NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
+			return target.Show(id)
+		}
 	}
 
 	if b.store != nil {
@@ -1198,6 +1344,17 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 		return nil, fmt.Errorf("refusing to create bead: %w (got %q)", ErrFlagTitle, opts.Title)
 	}
 
+	targetDir := b.targetBeadsDirForCreate(opts)
+	if targetDir != "" && targetDir != b.getResolvedBeadsDir() {
+		bdForCreate := &Beads{
+			workDir:    b.workDir,
+			beadsDir:   targetDir,
+			serverPort: b.serverPort,
+			isolated:   b.isolated,
+		}
+		return bdForCreate.Create(opts)
+	}
+
 	if b.store != nil && !opts.Ephemeral {
 		return b.storeCreate(opts)
 	}
@@ -1229,13 +1386,6 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 	}
 	if opts.Ephemeral {
 		args = append(args, "--ephemeral")
-	}
-	if opts.Rig != "" {
-		if townRoot := b.getTownRoot(); townRoot != "" {
-			if rigDir := GetRigDirForName(townRoot, opts.Rig); rigDir != "" {
-				args = append(args, "--repo="+rigDir)
-			}
-		}
 	}
 	// Default Actor from BD_ACTOR env var if not specified
 	// Uses getActor() to respect isolated mode (tests)

@@ -109,6 +109,77 @@ func isDeferredBead(info *beadInfo) bool {
 	return false
 }
 
+func applyWorkflowStepTargetOverride(args []string) ([]string, error) {
+	if len(args) != 2 {
+		return args, nil
+	}
+	rigName, isRig := IsRigName(args[1])
+	if !isRig {
+		return args, nil
+	}
+	info, err := getBeadInfo(args[0])
+	if err != nil {
+		return args, nil
+	}
+	target := workflowStepTargetFromDescription(info.Description, rigName)
+	if target == "" || target == args[1] {
+		return args, nil
+	}
+	if err := ValidateTarget(target); err != nil {
+		return args, fmt.Errorf("invalid %s for %s: %w", workflowTargetField, args[0], err)
+	}
+	redirected := append([]string(nil), args...)
+	redirected[1] = target
+	fmt.Printf("%s Workflow step target: %s\n", style.Dim.Render("→"), target)
+	return redirected, nil
+}
+
+func workflowStepTargetFromDescription(description, targetRig string) string {
+	for _, line := range strings.Split(description, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), workflowTargetField) {
+			continue
+		}
+		target := strings.TrimSpace(value)
+		if target == "" || target == "rig" {
+			return targetRig
+		}
+		return target
+	}
+	return ""
+}
+
+// isOrphanMolecule reports whether a bead's existing attached molecule(s)
+// can be safely burned at sling time without operator confirmation. Used
+// to gate the auto-burn path that lets sling self-heal from stale state.
+//
+// A molecule is treated as orphaned when:
+//   - the bead has no assignee but is in an active status (open/in_progress)
+//     or stuck in `hooked` with no assignee — the latter covers gh-3697,
+//     where one orphan wisp would otherwise wedge every subsequent sling
+//     to the rig with "bead already has N attached molecule(s)"; or
+//   - the bead has an assignee but that assignee's tmux session is dead.
+//
+// `closed` and `blocked` deliberately fall through to the refuse path:
+// burning molecules off a closed bead would mask completed work, and
+// burning off a blocked bead can mask a real dependency.
+func isOrphanMolecule(info *beadInfo) bool {
+	if info == nil {
+		return false
+	}
+	if info.Assignee == "" {
+		switch info.Status {
+		case "open", "in_progress", "hooked":
+			return true
+		}
+		return false
+	}
+	return isHookedAgentDeadFn(info.Assignee)
+}
+
 // collectExistingMolecules returns all molecule wisp IDs attached to a bead.
 // Checks both dependency bonds (ground truth from bd mol bond) and the
 // description's attached_molecule field (metadata pointer). Wisp IDs are
@@ -233,6 +304,47 @@ func verifyBeadExists(beadID string) error {
 	return nil
 }
 
+// verifyBeadExistsInTargetRigDatabase checks the target rig's beads database
+// directly instead of following prefix routing. This prevents gt sling from
+// spawning polecats or creating molecule/hook side effects for beads that only
+// resolve from HQ or another rig database.
+func verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot string) error {
+	if beadID == "" {
+		return nil
+	}
+	if targetRig == "" {
+		return fmt.Errorf("cannot verify bead %s in target rig: target rig is empty; refusing to sling before creating hooks or molecule side effects", beadID)
+	}
+	if townRoot == "" {
+		return fmt.Errorf("cannot verify bead %s in target rig %q: town root is unavailable; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
+	}
+
+	targetRigDir := beads.GetRigDirForName(townRoot, targetRig)
+	if targetRigDir == "" {
+		return fmt.Errorf("cannot resolve target rig %q beads database for bead %s; refusing to sling before creating hooks or molecule side effects", targetRig, beadID)
+	}
+	targetBeadsDir := filepath.Join(targetRigDir, ".beads")
+
+	out, err := BdCmd("--db", targetBeadsDir, "show", beadID, "--json", "--allow-stale").
+		Dir(targetRigDir).
+		StripBeadsDir().
+		Stderr(io.Discard).
+		Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return fmt.Errorf("bead %s is not present in target rig %q beads database; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
+	}
+
+	var infos []beadInfo
+	if err := json.Unmarshal(out, &infos); err != nil {
+		return fmt.Errorf("checking target rig %q database for bead %s: %w", targetRig, beadID, err)
+	}
+	if len(infos) == 0 {
+		return fmt.Errorf("bead %s is not present in target rig %q beads database; refusing to sling before creating hooks or molecule side effects", beadID, targetRig)
+	}
+
+	return nil
+}
+
 // getBeadInfo returns status and assignee for a bead.
 // Resolves the rig directory from the bead's prefix for correct dolt access.
 func getBeadInfo(beadID string) (*beadInfo, error) {
@@ -262,18 +374,46 @@ func getBeadInfo(beadID string) (*beadInfo, error) {
 // This enables a single read-modify-write cycle instead of sequential independent updates,
 // eliminating the race condition where concurrent writers could overwrite each other's fields.
 type beadFieldUpdates struct {
-	Dispatcher       string // Agent that dispatched the work
-	Args             string // Natural language instructions
+	Dispatcher       string   // Agent that dispatched the work
+	Args             string   // Natural language instructions
 	Vars             []string // Formula variables (key=value pairs)
-	AttachedMolecule string // Wisp root ID
-	AttachedFormula  string // Formula name (e.g., "mol-polecat-work") for inline step display
-	NoMerge          bool   // Skip merge queue on completion
-	ReviewOnly       bool   // Review-only mode: assignee must not merge/commit/push
-	Mode             string // Execution mode: "" (normal) or "ralph"
-	ConvoyID         string // Convoy bead ID (e.g., "hq-cv-abc")
-	MergeStrategy    string // Convoy merge strategy: "direct", "mr", "local"
-	ConvoyOwned      bool   // Convoy has gt:owned label (caller-managed lifecycle)
-	FormulaVars      string // Newline-separated key=value pairs for formula template substitution
+	AttachedMolecule string   // Wisp root ID
+	AttachedFormula  string   // Formula name (e.g., "mol-polecat-work") for inline step display
+	NoMerge          bool     // Skip merge queue on completion
+	ReviewOnly       bool     // Review-only mode: assignee must not merge/commit/push
+	Mode             string   // Execution mode: "" (normal) or "ralph"
+	ConvoyID         string   // Convoy bead ID (e.g., "hq-cv-abc")
+	MergeStrategy    string   // Convoy merge strategy: "direct", "mr", "local"
+	ConvoyOwned      bool     // Convoy has gt:owned label (caller-managed lifecycle)
+	FormulaVars      string   // Newline-separated key=value pairs for formula template substitution
+}
+
+func buildSlingFieldUpdates(
+	dispatcher string,
+	args string,
+	vars []string,
+	attachedMolecule string,
+	attachedFormula string,
+	noMerge bool,
+	reviewOnly bool,
+	formulaVars string,
+	convoyID string,
+	mergeStrategy string,
+	convoyOwned bool,
+) beadFieldUpdates {
+	return beadFieldUpdates{
+		Dispatcher:       dispatcher,
+		Args:             args,
+		Vars:             vars,
+		AttachedMolecule: attachedMolecule,
+		AttachedFormula:  attachedFormula,
+		NoMerge:          noMerge,
+		ReviewOnly:       reviewOnly,
+		ConvoyID:         convoyID,
+		MergeStrategy:    mergeStrategy,
+		ConvoyOwned:      convoyOwned,
+		FormulaVars:      formulaVars,
+	}
 }
 
 // storeFieldsInBead performs a single read-modify-write to update all attachment fields
@@ -711,7 +851,7 @@ func InstantiateFormulaOnBead(ctx context.Context, formulaName, beadID, title, h
 		if err := BdCmd("cook", formulaName).
 			Dir(formulaWorkDir).
 			WithGTRoot(townRoot).
-				Run(); err != nil {
+			Run(); err != nil {
 			// Retry with embedded formula
 			resolvedFormula, formulaCleanup = resolveFormulaToTempFile(formulaName)
 			if formulaCleanup != nil {
@@ -1005,6 +1145,7 @@ func hookBeadWithRetry(beadID, targetAgent, hookDir string) error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err := BdCmd("update", beadID, "--status=hooked", "--assignee="+targetAgent).
 			Dir(hookDir).
+			WithAutoCommit().
 			Run()
 		if err != nil {
 			lastErr = err
@@ -1054,6 +1195,8 @@ func hookBeadWithRetry(beadID, targetAgent, hookDir string) error {
 
 	return nil
 }
+
+var hookBeadWithRetryFn = hookBeadWithRetry
 
 // slingBackoff calculates exponential backoff with ±25% jitter for a given attempt (1-indexed).
 // Formula: base * 2^(attempt-1) * (1 ± 25% random), capped at max.

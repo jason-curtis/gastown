@@ -539,23 +539,22 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 		return fmt.Errorf("building startup command: %w", err)
 	}
 
-	// Create session with command directly to avoid send-keys race condition.
-	// See: https://github.com/anthropics/gastown/issues/280
-	fmt.Println("Starting Deacon session...")
-	if err := t.NewSessionWithCommand(sessionName, deaconDir, startupCmd); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
-
-	// Set environment (non-fatal: session works without these)
-	// Use centralized AgentEnv for consistency across all role startup paths
+	// Compute env vars BEFORE creating the session so they reach the agent's
+	// subprocesses (e.g., bd) via tmux -e flags. SetEnvironment after creation
+	// only affects newly spawned panes, not the running pane's tree (gt-neycp).
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:             "deacon",
 		TownRoot:         townRoot,
 		RuntimeConfigDir: runtimeConfigDir,
 		Agent:            agentOverride,
 	})
-	for k, v := range envVars {
-		_ = t.SetEnvironment(sessionName, k, v)
+
+	// Create session with command and env vars via -e flags so the initial
+	// shell (and subprocesses Claude spawns) inherit them from the start.
+	// See: https://github.com/anthropics/gastown/issues/280 (race condition fix)
+	fmt.Println("Starting Deacon session...")
+	if err := t.NewSessionWithCommandAndEnv(sessionName, deaconDir, startupCmd, envVars); err != nil {
+		return fmt.Errorf("creating session: %w", err)
 	}
 
 	// Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
@@ -1315,6 +1314,13 @@ func runDeaconPause(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("pausing Deacon: %w", err)
 	}
 
+	// Write agent_state=paused to the Deacon bead so the stuck-agent-dog plugin
+	// (and other ZFC readers) see authoritative pause state without inferring
+	// from heartbeat mtime. hq-sa8de Phase A.
+	if err := beads.New(townRoot).UpdateAgentState(beads.DeaconBeadIDTown(), string(beads.AgentStatePaused)); err != nil {
+		style.PrintWarning("could not sync agent_state=paused to Deacon bead: %v", err)
+	}
+
 	fmt.Printf("%s Deacon paused\n", style.Bold.Render("⏸️"))
 	if pauseReason != "" {
 		fmt.Printf("  Reason: %s\n", pauseReason)
@@ -1347,6 +1353,12 @@ func runDeaconResume(cmd *cobra.Command, args []string) error {
 	// Resume the Deacon
 	if err := deacon.Resume(townRoot); err != nil {
 		return fmt.Errorf("resuming Deacon: %w", err)
+	}
+
+	// Write agent_state=idle to the Deacon bead. The Deacon will transition to
+	// patrolling on its next cycle. hq-sa8de Phase A.
+	if err := beads.New(townRoot).UpdateAgentState(beads.DeaconBeadIDTown(), string(beads.AgentStateIdle)); err != nil {
+		style.PrintWarning("could not sync agent_state=idle to Deacon bead: %v", err)
 	}
 
 	fmt.Printf("%s Deacon resumed\n", style.Bold.Render("▶️"))

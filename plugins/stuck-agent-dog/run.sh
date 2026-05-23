@@ -45,8 +45,8 @@ while IFS='|' read -r RIG PREFIX; do
 
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
       # Session dead — check hook
-      HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-        | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+      HOOK_OUTPUT=$(gt hook show "$RIG/polecats/$PCAT_NAME" 2>/dev/null | head -1)
+      HOOK_BEAD=$(echo "$HOOK_OUTPUT" | grep -v '(empty)' | awk '{print $2}' || true)
 
       if [ -n "$HOOK_BEAD" ]; then
         # Check agent_state
@@ -67,8 +67,8 @@ while IFS='|' read -r RIG PREFIX; do
         PROC_COMM=$(ps -o comm= -p "$PANE_PID" 2>/dev/null)
         if [ -z "$PROC_COMM" ]; then
           # Zombie: process dead, session alive
-          HOOK_BEAD=$(gt hook "$RIG/polecats/$PCAT_NAME" 2>/dev/null \
-            | grep -oE 'Hooked: [^ ]+' | head -1 | sed 's/Hooked: //')
+          HOOK_OUTPUT=$(gt hook show "$RIG/polecats/$PCAT_NAME" 2>/dev/null | head -1)
+          HOOK_BEAD=$(echo "$HOOK_OUTPUT" | grep -v '(empty)' | awk '{print $2}' || true)
           if [ -n "$HOOK_BEAD" ]; then
             STUCK+=("$SESSION_NAME|$RIG|$PCAT_NAME|$HOOK_BEAD|agent_dead")
             log "  ZOMBIE: $SESSION_NAME (pid=$PANE_PID dead, hook=$HOOK_BEAD)"
@@ -135,7 +135,10 @@ fi
 # --- Take action --------------------------------------------------------------
 
 # Crashed polecats: notify witness to restart
-for ENTRY in "${CRASHED[@]}"; do
+# Note: `"${arr[@]:-}"` expands an empty array to a single empty string under
+# `set -u`, which would fire a phantom `RESTART_POLECAT: /` notification. The
+# `${arr[@]+"${arr[@]}"}` form expands to nothing when the array is empty.
+for ENTRY in ${CRASHED[@]+"${CRASHED[@]}"}; do
   IFS='|' read -r SESSION RIG PCAT HOOK <<< "$ENTRY"
   log "Requesting restart for $RIG/polecats/$PCAT (hook=$HOOK)"
   gt mail send "$RIG/witness" -s "RESTART_POLECAT: $RIG/$PCAT" --stdin <<BODY
@@ -146,7 +149,7 @@ BODY
 done
 
 # Zombie polecats: kill zombie session, then request restart
-for ENTRY in "${STUCK[@]}"; do
+for ENTRY in ${STUCK[@]+"${STUCK[@]}"}; do
   IFS='|' read -r SESSION RIG PCAT HOOK REASON <<< "$ENTRY"
   log "Killing zombie session $SESSION and requesting restart"
   tmux kill-session -t "$SESSION" 2>/dev/null || true

@@ -26,17 +26,6 @@ import (
 	"github.com/steveyegge/gastown/internal/util"
 )
 
-func stripEnvKey(env []string, key string) []string {
-	prefix := key + "="
-	filtered := env[:0]
-	for _, entry := range env {
-		if !strings.HasPrefix(entry, prefix) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
-}
-
 // shortSHA returns at most 8 characters of a SHA for display.
 func shortSHA(sha string) string {
 	if len(sha) > 8 {
@@ -251,7 +240,6 @@ type MRAnomaly struct {
 	Detail   string        `json:"detail"`
 }
 
-
 // errMergeSlotTimeout is returned by acquireMainPushSlot when retries are
 // exhausted due to slot contention. Infrastructure errors (beads down,
 // permission errors) return a different error so callers can distinguish
@@ -270,7 +258,7 @@ type Engineer struct {
 	beads                 *beads.Beads
 	git                   *git.Git
 	config                *MergeQueueConfig
-	prProvider            PRProvider   // VCS-specific PR operations (nil when MergeStrategy != "pr")
+	prProvider            PRProvider // VCS-specific PR operations (nil when MergeStrategy != "pr")
 	workDir               string
 	output                io.Writer    // Output destination for user-facing messages
 	router                *mail.Router // Mail router for sending protocol messages
@@ -350,21 +338,21 @@ func (e *Engineer) LoadConfig() error {
 	// Parse merge_queue section into our config struct
 	// We need special handling for poll_interval (string -> Duration)
 	var mqRaw struct {
-		Enabled              *bool                      `json:"enabled"`
-		OnConflict           *string                    `json:"on_conflict"`
-		RunTests             *bool                      `json:"run_tests"`
-		TestCommand          *string                    `json:"test_command"`
-		DeleteMergedBranches *bool                      `json:"delete_merged_branches"`
-		RetryFlakyTests      *int                       `json:"retry_flaky_tests"`
-		PollInterval         *string                    `json:"poll_interval"`
-		MaxConcurrent        *int                       `json:"max_concurrent"`
-		StaleClaimTimeout    *string                    `json:"stale_claim_timeout"`
-		Gates                map[string]*gateConfigRaw  `json:"gates"`
-		GatesParallel        *bool                      `json:"gates_parallel"`
-		AutoPush             *bool                      `json:"auto_push"`
-		MergeStrategy        *string                    `json:"merge_strategy"`
-		VCSProvider          *string                    `json:"vcs_provider"`
-		RequireReview        *bool                      `json:"require_review"`
+		Enabled              *bool                     `json:"enabled"`
+		OnConflict           *string                   `json:"on_conflict"`
+		RunTests             *bool                     `json:"run_tests"`
+		TestCommand          *string                   `json:"test_command"`
+		DeleteMergedBranches *bool                     `json:"delete_merged_branches"`
+		RetryFlakyTests      *int                      `json:"retry_flaky_tests"`
+		PollInterval         *string                   `json:"poll_interval"`
+		MaxConcurrent        *int                      `json:"max_concurrent"`
+		StaleClaimTimeout    *string                   `json:"stale_claim_timeout"`
+		Gates                map[string]*gateConfigRaw `json:"gates"`
+		GatesParallel        *bool                     `json:"gates_parallel"`
+		AutoPush             *bool                     `json:"auto_push"`
+		MergeStrategy        *string                   `json:"merge_strategy"`
+		VCSProvider          *string                   `json:"vcs_provider"`
+		RequireReview        *bool                     `json:"require_review"`
 	}
 
 	if err := json.Unmarshal(rawConfig.MergeQueue, &mqRaw); err != nil {
@@ -739,6 +727,15 @@ func (e *Engineer) doMerge(ctx context.Context, branch, target, sourceIssue stri
 				Error:   fmt.Sprintf("failed to push to origin: %v", err),
 			}
 		}
+		if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
+			if resetErr := e.git.ResetHard("origin/" + target); resetErr != nil {
+				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to reset %s after verified-push failure: %v\n", target, resetErr)
+			}
+			return ProcessResult{
+				Success: false,
+				Error:   err.Error(),
+			}
+		}
 	} else {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Auto-push disabled, skipping push to origin/%s\n", target)
 	}
@@ -830,6 +827,12 @@ func (e *Engineer) doMergePR(ctx context.Context, branch, target string) Process
 			mergeCommit = sha
 		}
 	}
+	if err := e.git.VerifyPushedCommit("origin", target, mergeCommit); err != nil {
+		return ProcessResult{
+			Success: false,
+			Error:   err.Error(),
+		}
+	}
 
 	_, _ = fmt.Fprintf(e.output, "[Engineer] Successfully merged PR #%d: %s\n", prNumber, shortSHA(mergeCommit))
 	return ProcessResult{
@@ -837,7 +840,6 @@ func (e *Engineer) doMergePR(ctx context.Context, branch, target string) Process
 		MergeCommit: mergeCommit,
 	}
 }
-
 
 func (e *Engineer) acquireMainPushSlot(ctx context.Context) (string, error) {
 	slotID, err := e.mergeSlotEnsureExists()
@@ -1208,6 +1210,9 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 	// normal close. This matches how gt done handles closures.
 	if mr.SourceIssue != "" {
 		closeReason := fmt.Sprintf("Merged in %s", mr.ID)
+		if result.MergeCommit != "" {
+			closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, mr.Target, result.MergeCommit)
+		}
 		if err := e.beads.ForceCloseWithReason(closeReason, mr.SourceIssue); err != nil {
 			// Check if already closed (by polecat's gt done) — that's fine
 			if issue, showErr := e.beads.Show(mr.SourceIssue); showErr == nil && beads.IssueStatus(issue.Status).IsTerminal() {
@@ -1222,7 +1227,7 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 
 	// 1.5. Clear agent bead's active_mr reference (traceability cleanup)
 	if mr.AgentBead != "" {
-		if err := e.beads.UpdateAgentActiveMR(mr.AgentBead, ""); err != nil {
+		if err := e.clearAgentActiveMR(mr.AgentBead); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to clear agent bead %s active_mr: %v\n", mr.AgentBead, err)
 		}
 	}
@@ -1274,6 +1279,10 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 
 	// 5. Log success
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
+}
+
+func (e *Engineer) clearAgentActiveMR(agentBeadID string) error {
+	return e.beads.ForAgentBead().UpdateAgentActiveMR(agentBeadID, "")
 }
 
 // HandleMRInfoFailure handles a failed merge from MRInfo.
@@ -1933,17 +1942,26 @@ type convoyInfo struct {
 	Description string
 }
 
+func refineryHasLabel(labels []string, target string) bool {
+	for _, label := range labels {
+		if label == target {
+			return true
+		}
+	}
+	return false
+}
+
 // checkAndCloseCompletedConvoys finds and closes convoys where all tracked issues
 // are complete. Returns the list of convoys that were closed.
 func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []convoyInfo {
-	bdEnv := stripEnvKey(os.Environ(), "BEADS_DIR")
+	townReadEnv := beads.BuildReadOnlyPinnedBDEnv(os.Environ(), townBeads)
+	townMutationEnv := beads.BuildMutationPinnedBDEnv(os.Environ(), townBeads)
+	routingReadEnv := beads.BuildReadOnlyRoutingBDEnv(os.Environ(), townBeads)
 
-	// List all open convoys
-	listArgs := beads.MaybePrependAllowStaleWithEnv(bdEnv, []string{"list", "--type=convoy", "--status=open", "--json"})
-	listCmd := exec.Command("bd", listArgs...)
-	util.SetDetachedProcessGroup(listCmd)
-	listCmd.Dir = townBeads
-	listCmd.Env = bdEnv
+	// List all open issues and filter locally so legacy type=convoy beads remain visible.
+	listArgs := beads.InjectFlatForListJSON([]string{"list", "--status=open", "--json", "--limit=0"})
+	listArgs = beads.MaybePrependAllowStaleWithEnv(townReadEnv, listArgs)
+	listCmd := beads.Command(townBeads, townBeads, beads.ReadOnlyPinned, listArgs...)
 	var stdout bytes.Buffer
 	listCmd.Stdout = &stdout
 
@@ -1953,10 +1971,12 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 	}
 
 	var convoys []struct {
-		ID          string `json:"id"`
-		Title       string `json:"title"`
-		Status      string `json:"status"`
-		Description string `json:"description"`
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Status      string   `json:"status"`
+		Description string   `json:"description"`
+		IssueType   string   `json:"issue_type"`
+		Labels      []string `json:"labels"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to parse convoy list: %v\n", err)
@@ -1966,12 +1986,12 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 	var closed []convoyInfo
 
 	for _, convoy := range convoys {
+		if convoy.IssueType != "convoy" && !refineryHasLabel(convoy.Labels, "gt:convoy") {
+			continue
+		}
 		// Get tracked issues for this convoy via bd dep list
-		depArgs := beads.MaybePrependAllowStaleWithEnv(bdEnv, []string{"dep", "list", convoy.ID, "--direction=down", "--type=tracks", "--json"})
-		depCmd := exec.Command("bd", depArgs...)
-		util.SetDetachedProcessGroup(depCmd)
-		depCmd.Dir = townRoot
-		depCmd.Env = bdEnv
+		depArgs := beads.MaybePrependAllowStaleWithEnv(townReadEnv, []string{"dep", "list", convoy.ID, "--direction=down", "--type=tracks", "--json"})
+		depCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyPinned, depArgs...)
 		var depOut bytes.Buffer
 		depCmd.Stdout = &depOut
 
@@ -2000,11 +2020,8 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 			}
 
 			// Get fresh status from home rig via bd show with routing
-			showArgs := beads.MaybePrependAllowStaleWithEnv(bdEnv, []string{"show", depID, "--json"})
-			showCmd := exec.Command("bd", showArgs...)
-			util.SetDetachedProcessGroup(showCmd)
-			showCmd.Dir = townRoot
-			showCmd.Env = bdEnv
+			showArgs := beads.MaybePrependAllowStaleWithEnv(routingReadEnv, []string{"show", depID, "--json"})
+			showCmd := beads.Command(townRoot, townBeads, beads.ReadOnlyRouting, showArgs...)
 			var showOut bytes.Buffer
 			showCmd.Stdout = &showOut
 
@@ -2038,11 +2055,8 @@ func (e *Engineer) checkAndCloseCompletedConvoys(townRoot, townBeads string) []c
 			reason = "Empty convoy — auto-closed as definitionally complete"
 		}
 
-		closeArgs := beads.MaybePrependAllowStaleWithEnv(bdEnv, []string{"close", convoy.ID, "-r", reason})
-		closeCmd := exec.Command("bd", closeArgs...)
-		util.SetDetachedProcessGroup(closeCmd)
-		closeCmd.Dir = townBeads
-		closeCmd.Env = bdEnv
+		closeArgs := beads.MaybePrependAllowStaleWithEnv(townMutationEnv, []string{"close", convoy.ID, "-r", reason})
+		closeCmd := beads.Command(townBeads, townBeads, beads.MutationPinned, closeArgs...)
 
 		if err := closeCmd.Run(); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close convoy %s: %v\n", convoy.ID, err)

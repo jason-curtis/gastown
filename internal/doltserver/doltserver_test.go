@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // =============================================================================
@@ -122,6 +124,50 @@ func TestGetDoltFlagFromArgs(t *testing.T) {
 				t.Fatalf("getDoltFlagFromArgs(%v, %q) = %q, want %q", tt.args, tt.flag, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReadSQLServerInfo(t *testing.T) {
+	dataDir := t.TempDir()
+	infoDir := filepath.Join(dataDir, ".dolt")
+	if err := os.MkdirAll(infoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	infoPath := filepath.Join(infoDir, "sql-server.info")
+	if err := os.WriteFile(infoPath, []byte("62569:3307:757ce4ea-40c5-40f1-9eaf-4d584cae87b0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := readSQLServerInfo(&Config{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("readSQLServerInfo: %v", err)
+	}
+	if info.PID != 62569 {
+		t.Fatalf("PID = %d, want 62569", info.PID)
+	}
+	if info.Port != 3307 {
+		t.Fatalf("Port = %d, want 3307", info.Port)
+	}
+	if info.ServerID != "757ce4ea-40c5-40f1-9eaf-4d584cae87b0" {
+		t.Fatalf("ServerID = %q", info.ServerID)
+	}
+	if info.Path != infoPath {
+		t.Fatalf("Path = %q, want %q", info.Path, infoPath)
+	}
+}
+
+func TestReadSQLServerInfoRejectsMalformedContent(t *testing.T) {
+	dataDir := t.TempDir()
+	infoDir := filepath.Join(dataDir, ".dolt")
+	if err := os.MkdirAll(infoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infoDir, "sql-server.info"), []byte("not-a-pid:3307"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readSQLServerInfo(&Config{DataDir: dataDir}); err == nil {
+		t.Fatal("expected malformed sql-server.info to fail")
 	}
 }
 
@@ -3095,6 +3141,29 @@ func TestFindOrphanedDatabases_DetectsOrphans(t *testing.T) {
 	}
 }
 
+func TestFindOrphanedDatabases_ProtectsBeadsGlobal(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+
+	setupDoltDB(t, dataDir, "hq")
+	setupDoltDB(t, dataDir, "beads_global")
+	setupDoltDB(t, dataDir, "orphan_db")
+
+	setupRigsJSON(t, townRoot, []string{})
+	setupRigMetadata(t, townRoot, "hq", "hq")
+
+	orphans, err := FindOrphanedDatabases(townRoot)
+	if err != nil {
+		t.Fatalf("FindOrphanedDatabases: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan, got %d: %v", len(orphans), orphans)
+	}
+	if orphans[0].Name != "orphan_db" {
+		t.Errorf("expected orphan name 'orphan_db', got %q", orphans[0].Name)
+	}
+}
+
 func TestFindOrphanedDatabases_MultipleOrphans(t *testing.T) {
 	townRoot := t.TempDir()
 	dataDir := filepath.Join(townRoot, ".dolt-data")
@@ -3280,6 +3349,23 @@ func TestRemoveDatabase_ErrorOnMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestRemoveDatabase_RefusesProtectedSharedServerDatabase(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	dbPath := setupDoltDB(t, dataDir, "beads_global")
+
+	err := RemoveDatabase(townRoot, "beads_global", true)
+	if err == nil {
+		t.Fatal("expected error for protected shared-server database")
+	}
+	if !strings.Contains(err.Error(), "protected shared-server database") {
+		t.Errorf("expected protected database error, got: %v", err)
+	}
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		t.Errorf("expected beads_global to remain on disk, got stat error: %v", statErr)
 	}
 }
 
@@ -3551,6 +3637,86 @@ func TestDefaultConfig_InvalidPortIgnored(t *testing.T) {
 	config := DefaultConfig(townRoot)
 	if config.Port != DefaultPort {
 		t.Errorf("Port = %d, want default %d when env var is invalid", config.Port, DefaultPort)
+	}
+}
+
+func TestDefaultConfig_ConfigYAMLBeatsDaemonJSON(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("listener:\n  port: 4407\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "daemon.json"), []byte(`{"env":{"GT_DOLT_PORT":"5507"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 4407 {
+		t.Errorf("Port = %d, want config.yaml port 4407", config.Port)
+	}
+}
+
+func TestDefaultConfig_DaemonJSONFallbackWithoutConfigOrEnv(t *testing.T) {
+	townRoot := t.TempDir()
+	t.Setenv("GT_DOLT_PORT", "")
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "daemon.json"), []byte(`{"env":{"GT_DOLT_PORT":"5507"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 5507 {
+		t.Errorf("Port = %d, want daemon.json port 5507", config.Port)
+	}
+}
+
+func TestDefaultConfig_IgnoreConfigUsesEnvPort(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("listener:\n  port: 4407\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GT_DOLT_IGNORE_CONFIG", "1")
+	t.Setenv("GT_DOLT_PORT", "5507")
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 5507 {
+		t.Errorf("Port = %d, want env port 5507 when config ignored", config.Port)
+	}
+}
+
+func TestDefaultConfig_ManagedDefaultsAndEnvOverrides(t *testing.T) {
+	townRoot := t.TempDir()
+
+	config := DefaultConfig(townRoot)
+	if config.EventScheduler != "OFF" {
+		t.Errorf("EventScheduler = %q, want OFF", config.EventScheduler)
+	}
+	if config.DoltStatsEnabled != "0" {
+		t.Errorf("DoltStatsEnabled = %q, want 0", config.DoltStatsEnabled)
+	}
+
+	t.Setenv("GT_DOLT_STATS_ENABLED", "omit")
+	t.Setenv("GT_DOLT_EVENT_SCHEDULER", "omit")
+	config = DefaultConfig(townRoot)
+	if config.DoltStatsEnabled != "omit" {
+		t.Errorf("DoltStatsEnabled = %q, want omit", config.DoltStatsEnabled)
+	}
+	if config.EventScheduler != "omit" {
+		t.Errorf("EventScheduler = %q, want omit", config.EventScheduler)
 	}
 }
 
@@ -3913,6 +4079,55 @@ func TestCollectDatabaseOwners_UnknownDB(t *testing.T) {
 	}
 }
 
+// TestCollectDatabaseOwners_ProtectedSharedServerDatabaseLabeled verifies that
+// protected shared-server databases (e.g. beads_global) are reported with a
+// dedicated owner label rather than appearing as orphans in `gt dolt list`.
+// Regression for the operator-confusion gap flagged on PR #3823 — the
+// orphan-detection skip alone wasn't enough; CollectDatabaseOwners has to
+// know about the same registry.
+func TestCollectDatabaseOwners_ProtectedSharedServerDatabaseLabeled(t *testing.T) {
+	townRoot := t.TempDir()
+
+	setupRigsJSON(t, townRoot, []string{})
+	setupRigMetadata(t, townRoot, "hq", "hq")
+
+	// Create a beads_global database directory on disk (no rig metadata
+	// references it — that's the whole reason it would otherwise look like
+	// an orphan).
+	dataDir := DefaultConfig(townRoot).DataDir
+	beadsGlobalPath := filepath.Join(dataDir, "beads_global", ".dolt")
+	if err := os.MkdirAll(beadsGlobalPath, 0o755); err != nil {
+		t.Fatalf("mkdir beads_global: %v", err)
+	}
+
+	owners := CollectDatabaseOwners(townRoot)
+	label, ok := owners["beads_global"]
+	if !ok {
+		t.Fatalf("expected beads_global to have an owner label, got owners=%v", owners)
+	}
+	if !strings.Contains(label, "protected") {
+		t.Errorf("expected protected-DB label to mention 'protected', got %q", label)
+	}
+}
+
+// TestCollectDatabaseOwners_ProtectedDatabaseNotPhantom verifies that the
+// protected-DB labeling only kicks in when the database actually exists on
+// disk — otherwise CollectDatabaseOwners would advertise an owner for a DB
+// that doesn't exist on the filesystem, which would be its own kind of
+// confusion.
+func TestCollectDatabaseOwners_ProtectedDatabaseNotPhantom(t *testing.T) {
+	townRoot := t.TempDir()
+
+	setupRigsJSON(t, townRoot, []string{})
+	setupRigMetadata(t, townRoot, "hq", "hq")
+
+	// Intentionally do NOT create beads_global on disk.
+	owners := CollectDatabaseOwners(townRoot)
+	if _, exists := owners["beads_global"]; exists {
+		t.Errorf("beads_global should not be in owners when absent from disk, got %q", owners["beads_global"])
+	}
+}
+
 // =============================================================================
 // writeServerConfig tests
 // =============================================================================
@@ -3948,11 +4163,72 @@ func TestWriteServerConfig_Defaults(t *testing.T) {
 		"data_dir: \"" + dir + "\"",
 		"log_level: warning",
 		"auto_gc_behavior:",
+		"event_scheduler: \"OFF\"",
+		"system_variables:",
+		"dolt_stats_enabled: 0",
 	}
 	for _, want := range checks {
 		if !strings.Contains(content, want) {
 			t.Errorf("config missing %q\nfull content:\n%s", want, content)
 		}
+	}
+
+	var parsed struct {
+		LogLevel string `yaml:"log_level"`
+		Listener struct {
+			Port               int `yaml:"port"`
+			MaxConnections     int `yaml:"max_connections"`
+			ReadTimeoutMillis  int `yaml:"read_timeout_millis"`
+			WriteTimeoutMillis int `yaml:"write_timeout_millis"`
+		} `yaml:"listener"`
+		DataDir  string `yaml:"data_dir"`
+		Behavior struct {
+			DoltTransactionCommit bool    `yaml:"dolt_transaction_commit"`
+			EventScheduler        *string `yaml:"event_scheduler"`
+			AutoGCBehavior        struct {
+				Enable       bool `yaml:"enable"`
+				ArchiveLevel int  `yaml:"archive_level"`
+			} `yaml:"auto_gc_behavior"`
+		} `yaml:"behavior"`
+		SystemVariables struct {
+			DoltStatsEnabled *int `yaml:"dolt_stats_enabled"`
+		} `yaml:"system_variables"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("generated config is invalid YAML: %v\n%s", err, content)
+	}
+	if parsed.LogLevel != "warning" {
+		t.Errorf("log_level = %q, want warning", parsed.LogLevel)
+	}
+	if parsed.Listener.Port != 3307 {
+		t.Errorf("listener.port = %d, want 3307", parsed.Listener.Port)
+	}
+	if parsed.Listener.MaxConnections != 1000 {
+		t.Errorf("listener.max_connections = %d, want 1000", parsed.Listener.MaxConnections)
+	}
+	if parsed.Listener.ReadTimeoutMillis != DefaultReadTimeoutMs {
+		t.Errorf("listener.read_timeout_millis = %d, want %d", parsed.Listener.ReadTimeoutMillis, DefaultReadTimeoutMs)
+	}
+	if parsed.Listener.WriteTimeoutMillis != DefaultWriteTimeoutMs {
+		t.Errorf("listener.write_timeout_millis = %d, want %d", parsed.Listener.WriteTimeoutMillis, DefaultWriteTimeoutMs)
+	}
+	if parsed.DataDir != dir {
+		t.Errorf("data_dir = %q, want %q", parsed.DataDir, dir)
+	}
+	if parsed.Behavior.DoltTransactionCommit {
+		t.Error("behavior.dolt_transaction_commit = true, want false")
+	}
+	if parsed.Behavior.EventScheduler == nil || *parsed.Behavior.EventScheduler != "OFF" {
+		t.Fatalf("behavior.event_scheduler = %v, want OFF", parsed.Behavior.EventScheduler)
+	}
+	if parsed.Behavior.AutoGCBehavior.Enable {
+		t.Error("behavior.auto_gc_behavior.enable = true, want false")
+	}
+	if parsed.Behavior.AutoGCBehavior.ArchiveLevel != 0 {
+		t.Errorf("behavior.auto_gc_behavior.archive_level = %d, want 0", parsed.Behavior.AutoGCBehavior.ArchiveLevel)
+	}
+	if parsed.SystemVariables.DoltStatsEnabled == nil || *parsed.SystemVariables.DoltStatsEnabled != 0 {
+		t.Fatalf("system_variables.dolt_stats_enabled = %v, want 0", parsed.SystemVariables.DoltStatsEnabled)
 	}
 }
 
@@ -4015,6 +4291,33 @@ func TestWriteServerConfig_ZeroTimeoutsOmitted(t *testing.T) {
 	}
 	if strings.Contains(content, "write_timeout_millis") {
 		t.Error("zero WriteTimeoutMs should not write write_timeout_millis")
+	}
+}
+
+func TestWriteServerConfig_StatsAndSchedulerCanBeOmitted(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	config := &Config{
+		Port:             3307,
+		DataDir:          dir,
+		DoltStatsEnabled: "omit",
+		EventScheduler:   "omit",
+	}
+	if err := writeServerConfig(config, configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "dolt_stats_enabled") {
+		t.Fatalf("dolt_stats_enabled should be omitted:\n%s", content)
+	}
+	if strings.Contains(content, "event_scheduler") {
+		t.Fatalf("event_scheduler should be omitted:\n%s", content)
 	}
 }
 

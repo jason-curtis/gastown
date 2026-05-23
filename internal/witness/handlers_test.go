@@ -16,6 +16,47 @@ import (
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
+func TestNotifyMayorSlotOpen_BlocksNonCompletedExit(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte(`{"name":"test"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(townRoot, "gastown", "witness")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	notifyMayorSlotOpen(workDir, "gastown", "guzzle", string(ExitTypeDeferred))
+
+	events, err := filepath.Glob(filepath.Join(townRoot, "events", "mayor", "*.event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %v, want one SLOT_BLOCKED event", events)
+	}
+	data, err := os.ReadFile(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Type    string            `json:"type"`
+		Payload map[string]string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "SLOT_BLOCKED" {
+		t.Fatalf("event type = %q, want SLOT_BLOCKED", event.Type)
+	}
+	if event.Payload["reason"] != "exit-deferred" {
+		t.Fatalf("reason = %q, want exit-deferred", event.Payload["reason"])
+	}
+}
+
 func TestHandlePolecatDoneFromBead_NilFields(t *testing.T) {
 	t.Parallel()
 	result := HandlePolecatDoneFromBead(DefaultBdCli(), "/tmp", "testrig", "nux", nil, nil)
@@ -1705,7 +1746,6 @@ func TestClearCompletionMetadata_NoBd(t *testing.T) {
 	}
 }
 
-
 // --- Heartbeat v2 tests (gt-3vr5) ---
 
 func TestHeartbeatV2_ExitingStateSkipsZombieDetection(t *testing.T) {
@@ -1849,6 +1889,132 @@ func TestZombieAgentSelfReportedStuck_Classification(t *testing.T) {
 	}
 }
 
+func TestZombieNeverHeartbeated_Classification(t *testing.T) {
+	t.Parallel()
+	if ZombieNeverHeartbeated != "never-heartbeated" {
+		t.Errorf("ZombieNeverHeartbeated = %q, want %q", ZombieNeverHeartbeated, "never-heartbeated")
+	}
+	if !ZombieNeverHeartbeated.ImpliesActiveWork() {
+		t.Error("ZombieNeverHeartbeated should imply active work")
+	}
+
+	// Session old enough (>5m default) with assigned work and no heartbeat → flag.
+	oldSession := time.Now().Add(-10 * time.Minute)
+	shouldFlag := time.Since(oldSession) > config.DefaultWitnessHeartbeatStartupGrace
+	if !shouldFlag {
+		t.Errorf("expected flag for session age=%v, threshold=%v",
+			time.Since(oldSession).Round(time.Second), config.DefaultWitnessHeartbeatStartupGrace)
+	}
+
+	// Session within grace period → no flag.
+	newSession := time.Now().Add(-2 * time.Minute)
+	shouldNotFlag := time.Since(newSession) <= config.DefaultWitnessHeartbeatStartupGrace
+	if !shouldNotFlag {
+		t.Errorf("expected no flag for session age=%v, threshold=%v",
+			time.Since(newSession).Round(time.Second), config.DefaultWitnessHeartbeatStartupGrace)
+	}
+}
+
+func TestSubmittedStillRunningCandidate(t *testing.T) {
+	t.Parallel()
+
+	baseSnap := &agentBeadSnapshot{
+		AgentState: string(beads.AgentStateDone),
+		HookBead:   "gt-work-123",
+		UpdatedAt:  time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
+		Fields: &beads.AgentFields{
+			CleanupStatus: "clean",
+			MRID:          "gt-mr-123",
+		},
+	}
+	staleHB := &polecat.SessionHeartbeat{
+		Timestamp: time.Now().Add(-10 * time.Minute),
+		State:     polecat.HeartbeatWorking,
+	}
+
+	age, ok := isSubmittedStillRunningCandidate(baseSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace)
+	if !ok {
+		t.Fatalf("expected submitted still-running candidate, age=%v", age)
+	}
+
+	noHookSnap := *baseSnap
+	noHookSnap.HookBead = ""
+	if _, ok := isSubmittedStillRunningCandidate(&noHookSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); !ok {
+		t.Error("no-hook submitted sessions must still be treated as submitted still-running")
+	}
+
+	idleSnap := *baseSnap
+	idleSnap.AgentState = string(beads.AgentStateIdle)
+	if _, ok := isSubmittedStillRunningCandidate(&idleSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("normal idle polecats with submitted MR metadata must not be treated as submitted still-running")
+	}
+
+	freshHB := &polecat.SessionHeartbeat{
+		Timestamp: time.Now(),
+		State:     polecat.HeartbeatWorking,
+	}
+	if _, ok := isSubmittedStillRunningCandidate(baseSnap, freshHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("fresh heartbeat must not be treated as submitted still-running")
+	}
+
+	dirtySnap := *baseSnap
+	dirtyFields := *baseSnap.Fields
+	dirtyFields.CleanupStatus = "has_uncommitted"
+	dirtySnap.Fields = &dirtyFields
+	if _, ok := isSubmittedStillRunningCandidate(&dirtySnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("dirty cleanup status must not be treated as safe submitted still-running")
+	}
+
+	noSubmitSnap := *baseSnap
+	noSubmitSnap.AgentState = string(beads.AgentStateWorking)
+	noSubmitSnap.ActiveMR = ""
+	noSubmitSnap.Fields = &beads.AgentFields{CleanupStatus: "clean"}
+	if _, ok := isSubmittedStillRunningCandidate(&noSubmitSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("open hooked work without submission evidence must not be treated as submitted still-running")
+	}
+
+	completedOnlySnap := *baseSnap
+	completedOnlySnap.ActiveMR = ""
+	completedOnlySnap.Fields = &beads.AgentFields{
+		CleanupStatus:  "clean",
+		ExitType:       string(ExitTypeCompleted),
+		CompletionTime: time.Now().Format(time.RFC3339),
+	}
+	if _, ok := isSubmittedStillRunningCandidate(&completedOnlySnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("COMPLETED metadata alone must not be treated as successful submission evidence")
+	}
+
+	failedSubmitSnap := *baseSnap
+	failedSubmitSnap.Fields = &beads.AgentFields{
+		CleanupStatus: "clean",
+		MRID:          "gt-mr-123",
+		MRFailed:      true,
+	}
+	if _, ok := isSubmittedStillRunningCandidate(&failedSubmitSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("failed MR submission must not be treated as successful submission evidence")
+	}
+
+	pushFailedSnap := *baseSnap
+	pushFailedSnap.Fields = &beads.AgentFields{
+		CleanupStatus: "clean",
+		MRID:          "gt-mr-123",
+		PushFailed:    true,
+	}
+	if _, ok := isSubmittedStillRunningCandidate(&pushFailedSnap, staleHB, config.DefaultWitnessHeartbeatStartupGrace); ok {
+		t.Error("failed push must not be treated as successful submission evidence")
+	}
+}
+
+func TestZombieSubmittedStillRunning_Classification(t *testing.T) {
+	t.Parallel()
+	if ZombieSubmittedStillRunning != "submitted-still-running" {
+		t.Errorf("ZombieSubmittedStillRunning = %q, want %q", ZombieSubmittedStillRunning, "submitted-still-running")
+	}
+	if ZombieSubmittedStillRunning.ImpliesActiveWork() {
+		t.Error("ZombieSubmittedStillRunning should be classified as orphan/submitted idle, not active failed work")
+	}
+}
+
 func TestNotifyRefineryMergeReady_EmitsChannelEvent(t *testing.T) {
 	// Create a fake town root with the workspace marker so workspace.Find recognizes it
 	townRoot := t.TempDir()
@@ -1911,5 +2077,89 @@ func TestNotifyRefineryMergeReady_EmitsChannelEvent(t *testing.T) {
 	}
 	if payload["rig"] != "dashboard" {
 		t.Errorf("payload.rig = %v, want dashboard", payload["rig"])
+	}
+}
+
+// TestCherryHasUnmergedCommits covers the git-cherry output parser used by
+// verifyBranchAlreadyMerged (aa-apw).
+func TestCherryHasUnmergedCommits(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty output — branch has no commits beyond base", "", false},
+		{"whitespace only", "  \n\n", false},
+		{"all squash-applied (-)", "- abc123\n- def456\n", false},
+		{"one unmerged (+)", "+ abc123\n", true},
+		{"mixed", "- abc123\n+ def456\n", true},
+		{"unmerged only", "+ a\n+ b\n+ c\n", true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := cherryHasUnmergedCommits(tc.in); got != tc.want {
+				t.Errorf("cherryHasUnmergedCommits(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleZombieRestart_SkipsWhenBranchAlreadyMerged verifies the aa-apw fix:
+// when a stopped polecat's branch work is already merged to origin/main (e.g.,
+// via squash-merge), the witness must NOT restart the session — restarting
+// would let the polecat re-push its pre-squash HEAD and create a duplicate MR.
+// Instead the polecat is archived.
+//
+// Not parallel: overrides the package-level verifyBranchAlreadyMerged var.
+func TestHandleZombieRestart_SkipsWhenBranchAlreadyMerged(t *testing.T) {
+	oldVerify := verifyBranchAlreadyMerged
+	verifyBranchAlreadyMerged = func(workDir, rigName, polecatName string) (bool, error) {
+		return true, nil
+	}
+	t.Cleanup(func() { verifyBranchAlreadyMerged = oldVerify })
+
+	bd, _ := mockBd(
+		func(args []string) (string, error) { return "[]", nil },
+		func(args []string) error { return nil },
+	)
+
+	z := &ZombieResult{PolecatName: "scavenger", HookBead: "ma-poc.4"}
+	handleZombieRestart(bd, t.TempDir(), "testrig", "scavenger", "ma-poc.4", "has_unpushed", z)
+
+	// Action must reflect the archive decision; must NOT be a "restarted*" action.
+	if !strings.Contains(z.Action, "work-already-merged") {
+		t.Errorf("action = %q, want it to mention work-already-merged (aa-apw)", z.Action)
+	}
+	if strings.HasPrefix(z.Action, "restarted") || strings.HasPrefix(z.Action, "restart-") {
+		t.Errorf("action = %q, polecat must not be restarted when work is already merged", z.Action)
+	}
+}
+
+// TestHandleZombieRestart_RestartsWhenBranchNotMerged verifies the pre-aa-apw
+// behavior is preserved when work is NOT merged: handleZombieRestart proceeds
+// to its normal cleanup/restart flow.
+//
+// Not parallel: overrides the package-level verifyBranchAlreadyMerged var.
+func TestHandleZombieRestart_RestartsWhenBranchNotMerged(t *testing.T) {
+	oldVerify := verifyBranchAlreadyMerged
+	verifyBranchAlreadyMerged = func(workDir, rigName, polecatName string) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() { verifyBranchAlreadyMerged = oldVerify })
+
+	bd, _ := mockBd(
+		func(args []string) (string, error) { return "[]", nil },
+		func(args []string) error { return nil },
+	)
+
+	z := &ZombieResult{PolecatName: "scavenger", HookBead: "ma-poc.4"}
+	handleZombieRestart(bd, t.TempDir(), "testrig", "scavenger", "ma-poc.4", "clean", z)
+
+	// Should NOT take the archive path.
+	if strings.Contains(z.Action, "work-already-merged") {
+		t.Errorf("action = %q, should not archive when work is not merged", z.Action)
 	}
 }

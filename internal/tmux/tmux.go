@@ -312,12 +312,20 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 		return err
 	}
 
-	// Defense-in-depth: remove CLAUDECODE from the tmux server's global
-	// environment so new sessions don't inherit it. Claude Code sets this
-	// variable on startup and the tmux server inherits it if started from
-	// within a Claude Code session. This causes nested-session detection
-	// failures in all subsequently created sessions.
+	// Defense-in-depth: remove CLAUDECODE and agent-identity vars from the
+	// tmux server's global environment so new sessions don't inherit them.
+	// CLAUDECODE: Claude Code sets this on startup; causes nested-session
+	// detection failures if inherited (GH#1666).
+	// IdentityEnvVars (GT_ROLE, BD_ACTOR, GIT_AUTHOR_NAME, etc.): the daemon
+	// process sets BD_ACTOR=daemon; if the tmux server was started from the
+	// daemon's context the global env inherits that value. Polecat sessions
+	// then inherit BD_ACTOR=daemon and gt done rejects them with "you are daemon"
+	// (gt-xyr). Clearing these here ensures every session gets identity vars
+	// only from its own startup command / -e flags, not from a stale global.
 	_, _ = t.run("set-environment", "-g", "-u", "CLAUDECODE")
+	for _, k := range config.IdentityEnvVars {
+		_, _ = t.run("set-environment", "-g", "-u", k)
+	}
 
 	// Two-step creation: create session with default shell first, configure
 	// remain-on-exit, then replace the shell with the actual command. This
@@ -559,6 +567,35 @@ func (t *Tmux) EnsureSessionFreshWithCommand(name, workDir, command string) erro
 
 	// Create session with command as the initial process
 	return t.NewSessionWithCommand(name, workDir, command)
+}
+
+// EnsureSessionFreshWithCommandAndEnv is like EnsureSessionFreshWithCommand but
+// also seeds the session's environment via tmux -e flags. The -e flags set
+// session-level env BEFORE the shell starts, so the initial pane (and any
+// subprocesses the agent spawns, e.g. bd) inherit it. SetEnvironment after
+// creation only affects newly spawned panes — not the running pane's
+// subprocess tree (gt-neycp).
+//
+// If an existing session has a healthy agent, returns ErrSessionRunning.
+func (t *Tmux) EnsureSessionFreshWithCommandAndEnv(name, workDir, command string, env map[string]string) error {
+	if err := validateSessionName(name); err != nil {
+		return err
+	}
+
+	running, err := t.HasSession(name)
+	if err != nil {
+		return fmt.Errorf("checking session: %w", err)
+	}
+	if running {
+		if t.IsAgentRunning(name) {
+			return ErrSessionRunning
+		}
+		if err := t.KillSessionWithProcesses(name); err != nil {
+			return fmt.Errorf("killing zombie session: %w", err)
+		}
+	}
+
+	return t.NewSessionWithCommandAndEnv(name, workDir, command, env)
 }
 
 // KillSession terminates a tmux session. Idempotent: returns nil if the
@@ -2012,11 +2049,19 @@ func (t *Tmux) FindAgentPane(session string) (string, error) {
 	// ZFC: read declared pane identity set at session startup (gt-qmsx).
 	// This replaces process-tree inference for sessions that record GT_PANE_ID.
 	if declaredPane, err := t.GetEnvironment(session, "GT_PANE_ID"); err == nil && declaredPane != "" {
-		// Verify the pane still exists in tmux (it may have been killed/respawned).
-		if _, verifyErr := t.run("display-message", "-t", declaredPane, "-p", "#{pane_id}"); verifyErr == nil {
+		targetSession := session
+		if sessionOut, sessionErr := t.run("display-message", "-t", session, "-p", "#{session_name}"); sessionErr == nil {
+			if resolved := strings.TrimSpace(sessionOut); resolved != "" {
+				targetSession = resolved
+			}
+		}
+
+		// Verify the pane still exists in the target session. Pane IDs are tmux-global,
+		// so a stale GT_PANE_ID may still resolve in a different restarted session.
+		if paneSession, verifyErr := t.run("display-message", "-t", declaredPane, "-p", "#{session_name}"); verifyErr == nil && strings.TrimSpace(paneSession) == targetSession {
 			return declaredPane, nil
 		}
-		// Declared pane is gone — fall through to scan.
+		// Declared pane is gone or belongs to another session — fall through to scan.
 	}
 
 	// Fallback: scan all panes for legacy sessions without GT_PANE_ID.
@@ -3074,6 +3119,23 @@ func (t *Tmux) GetSessionInfo(name string) (*SessionInfo, error) {
 	return info, nil
 }
 
+// GetSessionCreatedTime returns the creation time of a tmux session.
+// Uses #{session_created} (Unix timestamp) from tmux list-sessions.
+func (t *Tmux) GetSessionCreatedTime(name string) (time.Time, error) {
+	out, err := t.run("list-sessions", "-F", "#{session_created}", "-f", fmt.Sprintf("#{==:#{session_name},%s}", name))
+	if err != nil {
+		return time.Time{}, err
+	}
+	if out == "" {
+		return time.Time{}, ErrSessionNotFound
+	}
+	var unix int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(out), "%d", &unix); err != nil {
+		return time.Time{}, fmt.Errorf("parsing session created time %q: %w", out, err)
+	}
+	return time.Unix(unix, 0), nil
+}
+
 // ApplyTheme sets the status bar style for a session.
 func (t *Tmux) ApplyTheme(session string, theme Theme) error {
 	_, err := t.run("set-option", "-t", session, "status-style", theme.Style())
@@ -3165,8 +3227,8 @@ func (t *Tmux) SetDynamicStatus(session string) error {
 	if _, err := t.run("set-option", "-t", session, "status-right-length", "80"); err != nil {
 		return err
 	}
-	// Set faster refresh for more responsive status
-	if _, err := t.run("set-option", "-t", session, "status-interval", "5"); err != nil {
+	// Keep refresh modest: status-line may inspect hooks/mail, which are Dolt-backed.
+	if _, err := t.run("set-option", "-t", session, "status-interval", "60"); err != nil {
 		return err
 	}
 	_, err := t.run("set-option", "-t", session, "status-right", right)

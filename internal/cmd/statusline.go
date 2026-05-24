@@ -111,7 +111,7 @@ func runStatusLine(cmd *cobra.Command, args []string) error {
 }
 
 // runWorkerStatusLine outputs status for crew or polecat sessions.
-func runWorkerStatusLine(_ *tmux.Tmux, session, rigName, polecat, crew, issue string) error {
+func runWorkerStatusLine(_ *tmux.Tmux, _, _ string, polecat, crew, issue string) error {
 	// Determine agent type and identity
 	var icon string
 	if polecat != "" {

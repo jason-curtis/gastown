@@ -113,8 +113,8 @@ else
     NOW=$(date +%s)
     HEARTBEAT_AGE=$(( NOW - HEARTBEAT_TIME ))
 
-    if [ "$HEARTBEAT_AGE" -gt 2400 ]; then
-      log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old, >40m threshold)"
+    if [ "$HEARTBEAT_AGE" -gt 3600 ]; then
+      log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old, >60m threshold)"
       DEACON_ISSUE="stuck_heartbeat_${HEARTBEAT_AGE}s"
     else
       log "  OK: Deacon heartbeat ${HEARTBEAT_AGE}s old"

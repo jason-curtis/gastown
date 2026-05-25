@@ -157,10 +157,11 @@ func runDailyDigest() error {
 		return enc.Encode(report)
 	}
 
-	// Suppress mail if nothing was compacted and no anomalies.
-	// A no-op patrol run doesn't need to flood the mayor inbox.
-	if len(result.Deleted) == 0 && len(result.Promoted) == 0 && len(report.Anomalies) == 0 {
-		fmt.Printf("%s No wisps compacted on %s — skipping mail\n", style.Dim.Render("○"), dateStr)
+	// Suppress mail if activity is below noise threshold and no anomalies.
+	// Only report when something meaningful happened (5+ compacted) or anomalies exist.
+	totalActivity := len(result.Deleted) + len(result.Promoted)
+	if totalActivity < 5 && len(report.Anomalies) == 0 {
+		fmt.Printf("%s Low activity (%d compacted) on %s — skipping mail\n", style.Dim.Render("○"), totalActivity, dateStr)
 		return nil
 	}
 

@@ -1204,7 +1204,9 @@ func runDogDispatch(cmd *cobra.Command, args []string) error {
 	}
 
 	// Verify the work state write is readable. A read-back failure here
-	// indicates state corruption, not a timing race.
+	// indicates state corruption (getErr != nil case). If work is already
+	// cleared (d.Work == ""), the dog likely completed the plugin quickly
+	// before this verify ran — only escalate if the session never started.
 	// See: github.com/steveyegge/gastown/issues/2748
 	result.WorkConfirmed = false
 	if d, getErr := mgr.Get(targetDog.Name); getErr != nil {
@@ -1216,13 +1218,21 @@ func runDogDispatch(cmd *cobra.Command, args []string) error {
 		_ = dogEscalateBestEffort(warn)
 	} else if d.Work != "" {
 		result.WorkConfirmed = true
-	} else {
+	} else if !result.SessionStarted {
+		// Session failed to start AND work is gone — re-dispatch required.
 		warn := fmt.Sprintf("dog dispatch: work assignment cleared for %s between dispatch and verify — re-dispatch required", targetDog.Name)
 		result.Warnings = append(result.Warnings, warn)
 		if !dogDispatchJSON {
 			style.PrintWarning("%s", warn)
 		}
 		_ = dogEscalateBestEffort(warn)
+	} else {
+		// Session started, work already cleared — dog completed the plugin
+		// before this verify ran. This is normal for fast plugins.
+		result.WorkConfirmed = true
+		if !dogDispatchJSON {
+			fmt.Printf("  Note: %s completed plugin quickly (work cleared before verify)\n", targetDog.Name)
+		}
 	}
 
 	// Success - output result
